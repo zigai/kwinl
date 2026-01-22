@@ -33,25 +33,25 @@ go build -o kwin-layout .
 
 ```
 Loads a temporary KWin script via D-Bus that intercepts newly created
-windows matching the specified desktopFileName and moves/resizes them to the
+windows matching the specified application ID and moves/resizes them to the
 requested geometry. Only windows created after the script loads are affected.
 
 Geometry values can be absolute pixels (e.g., 100) or percentages (e.g., 50%).
 Percentages are relative to the target monitor's dimensions.
 
 Usage:
-  kwin-layout place --df <desktopFileName> --geom <x>,<y>,<w>,<h> --cmd "<command>" [--anchor <anchor>] [--monitor <id>] [--desktop <id>] [--timeout <duration>]
+  kwin-layout place --app <app-id> --geom <x>,<y>,<w>,<h> --cmd "<command>" [--anchor <anchor>] [--monitor <id>] [--desktop <id>] [--timeout <duration>]
 
 Examples:
-  kwin-layout place --df org.kde.konsole --geom 50,50,900,700 --timeout 8s --cmd "konsole --separate"
-  kwin-layout place --df org.kde.konsole --geom 0,0,50%,100% --anchor top-left --cmd "konsole"
-  kwin-layout place --df org.kde.konsole --geom 0,0,50%,100% --monitor 1 --desktop 2 --cmd "konsole"
+  kwin-layout place --app org.kde.konsole --geom 50,50,900,700 --timeout 8s --cmd "konsole --separate"
+  kwin-layout place --app org.kde.konsole --geom 0,0,50%,100% --anchor top-left --cmd "konsole"
+  kwin-layout place --app org.kde.konsole --geom 0,0,50%,100% --monitor 1 --desktop 2 --cmd "konsole"
 
 Flags:
       --anchor string    anchor point for positioning (default "top-left")
       --cmd string       command to run (quoted string)
       --desktop string   target virtual desktop (1-based index or name)
-      --df string        desktopFileName to match (required)
+      --app string       application ID to match (required)
       --geom string      geometry as x,y,w,h (values can be pixels or percentages like 50%)
   -h, --help             help for place
       --monitor string   target monitor (index like 0, 1 or name like DP-1)
@@ -61,30 +61,19 @@ Flags:
 #### kwin-layout launch
 
 ```
-kwin-layout capture --help
-Captures the geometry/monitor/desktop of currently open windows and writes a YAML
-or JSON template (based on output file extension) suitable for use with "kwin-layout launch".
-
-Only windows with a non-empty desktopFileName are included. Geometry is recorded relative
-to the window's output (monitor) origin, and anchor is set to top-left.
-
-If --infer-command is enabled (default), each preset uses:
-  command: ["gtk-launch", "<desktopFileName>"]
-This is a best-effort launcher and may not reproduce multi-window apps exactly.
+Reads a template file containing multiple window presets and launches
+all specified applications with their configured geometries.
 
 Usage:
-  kwin-layout capture <layout.yaml|layout.yml|layout.json|-> [--timeout <duration>] [--infer-command] [flags]
+  kwin-layout launch <config.yaml|config.json> [--timeout <duration>] [flags]
 
 Examples:
-  kwin-layout capture layout.yaml
-  kwin-layout capture layout.json
-  kwin-layout capture - --timeout 2s
-  kwin-layout capture layout.yml --infer-command=false
+  kwin-layout launch layout.yaml
+  kwin-layout launch workspace.json --timeout 15s
 
 Flags:
-  -h, --help             help for capture
-      --infer-command    infer a best-effort launcher command using gtk-launch (default true)
-      --timeout string   capture timeout (e.g., 2s, 500ms) (default "2s")
+  -h, --help             help for launch
+      --timeout string   timeout override (e.g., 10s)
 ```
 
 #### kwin-layout capture
@@ -93,26 +82,31 @@ Flags:
 Captures the geometry/monitor/desktop of currently open windows and writes a YAML
 or JSON template (based on output file extension) suitable for use with "kwin-layout launch".
 
-Only windows with a non-empty desktopFileName are included. Geometry is recorded relative
-to the window's output (monitor) origin, and anchor is set to top-left.
+By default, only windows with a non-empty desktopFileName are included. Use --include-unknown
+to also capture windows without desktopFileName (these will be matched by window title).
+
+Maximized and fullscreen states are captured and will be restored when launching.
 
 If --infer-command is enabled (default), each preset uses:
   command: ["gtk-launch", "<desktopFileName>"]
 This is a best-effort launcher and may not reproduce multi-window apps exactly.
 
 Usage:
-  kwin-layout capture <layout.yaml|layout.yml|layout.json|-> [--timeout <duration>] [--infer-command] [flags]
+  kwin-layout capture <layout.yaml|layout.yml|layout.json|-> [flags]
 
 Examples:
   kwin-layout capture layout.yaml
-  kwin-layout capture layout.json
-  kwin-layout capture - --timeout 2s
-  kwin-layout capture layout.yml --infer-command=false
+  kwin-layout capture layout.json --include-unknown
+  kwin-layout capture layout.yml --current-desktop
+  kwin-layout capture layout.yaml --monitor DP-1
 
 Flags:
-  -h, --help             help for capture
-      --infer-command    infer a best-effort launcher command using gtk-launch (default true)
-      --timeout string   capture timeout (e.g., 2s, 500ms) (default "2s")
+      --current-desktop    only capture windows on current desktop
+  -h, --help               help for capture
+      --include-unknown    include windows without desktopFileName (matched by title)
+      --infer-command      infer a best-effort launcher command using gtk-launch (default true)
+      --monitor string     only capture windows on specified monitor
+      --timeout string     capture timeout (e.g., 2s, 500ms) (default "2s")
 ```
 
 ### Template format (YAML/JSON)
@@ -121,43 +115,38 @@ Flags:
 version: 1.0.0
 timeout: 8s
 presets:
-  - name: terminal
-    df: org.kde.konsole
-    command: [konsole, --separate]
+  - name: konsole-1
+    app: org.kde.konsole
+    command: [gtk-launch, org.kde.konsole]
     geometry:
-      x: 50
-      y: 50
-      width: 900
-      height: 700
+      x: 0
+      y: 0
+      width: 960
+      height: 1080
     anchor: top-left
-    monitor: 0
-    desktop: 1
+    monitor: DP-1
+    desktop: Desktop 1
+    maximized: horizontal
 ```
 
-```json
-{
-  "version": "1.0.0",
-  "timeout": "8s",
-  "presets": [
-    {
-      "name": "terminal",
-      "df": "org.kde.konsole",
-      "command": ["konsole", "--separate"],
-      "geometry": {
-        "x": 50,
-        "y": 50,
-        "width": 900,
-        "height": 700
-      },
-      "anchor": "top-left",
-      "monitor": "0",
-      "desktop": "1"
-    }
-  ]
-}
-```
+#### Preset fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | yes | Preset identifier |
+| `app` | one of app/match | Application ID to match (e.g., `org.kde.konsole`) |
+| `match` | one of app/match | Regex pattern to match window title (e.g., `^Firefox$`) |
+| `command` | yes | Command to launch (array or quoted string) |
+| `geometry` | yes | Window geometry with `x`, `y`, `width`, `height` |
+| `anchor` | no | Anchor point for positioning (default: `top-left`) |
+| `monitor` | no | Target monitor (index or name like `DP-1`) |
+| `desktop` | no | Target virtual desktop (1-based index or name) |
+| `maximized` | no | Maximize state: `horizontal`, `vertical`, or `both` |
+| `fullscreen` | no | Set to `true` to make window fullscreen |
 
 `command` can be either a quoted string (split into args, no shell expansion) or an explicit array of strings. Capture emits the array form.
+
+Windows can be matched by either `app` (application ID) or `match` (title regex). At least one must be specified. When both are present, either can trigger a match.
 
 ## License
 
