@@ -61,7 +61,7 @@ type ParsedGeometry struct {
 }
 
 type Config struct {
-	DF         string
+	App        string
 	Geom       ParsedGeometry
 	Anchor     string
 	Monitor    string
@@ -82,13 +82,16 @@ type PresetGeometry struct {
 }
 
 type Preset struct {
-	Name     string         `json:"name" yaml:"name"`
-	DF       string         `json:"df" yaml:"df"`
-	Command  CommandSpec    `json:"command" yaml:"command"`
-	Geometry PresetGeometry `json:"geometry" yaml:"geometry"`
-	Anchor   string         `json:"anchor,omitempty" yaml:"anchor,omitempty"`
-	Monitor  string         `json:"monitor,omitempty" yaml:"monitor,omitempty"`
-	Desktop  string         `json:"desktop,omitempty" yaml:"desktop,omitempty"`
+	Name       string         `json:"name" yaml:"name"`
+	App        string         `json:"app,omitempty" yaml:"app,omitempty"`
+	Match      string         `json:"match,omitempty" yaml:"match,omitempty"`
+	Command    CommandSpec    `json:"command" yaml:"command"`
+	Geometry   PresetGeometry `json:"geometry" yaml:"geometry"`
+	Anchor     string         `json:"anchor,omitempty" yaml:"anchor,omitempty"`
+	Monitor    string         `json:"monitor,omitempty" yaml:"monitor,omitempty"`
+	Desktop    string         `json:"desktop,omitempty" yaml:"desktop,omitempty"`
+	Maximized  string         `json:"maximized,omitempty" yaml:"maximized,omitempty"`
+	FullScreen bool           `json:"fullscreen,omitempty" yaml:"fullscreen,omitempty"`
 }
 
 type Template struct {
@@ -245,7 +248,7 @@ func (e *ScriptPathWarning) Error() string {
 var (
 	version = "1.0.0"
 
-	placeDFFlag       string
+	placeAppFlag      string
 	placeGeomFlag     string
 	placeAnchorFlag   string
 	placeMonitorFlag  string
@@ -256,7 +259,17 @@ var (
 
 	captureTimeoutFlag      string
 	captureInferCommandFlag bool
+	captureIncludeUnknown   bool
+	captureCurrentDesktop   bool
+	captureMonitorFilter    string
 )
+
+type captureOptions struct {
+	InferCommand   bool
+	IncludeUnknown bool
+	CurrentDesktop bool
+	MonitorFilter  string
+}
 
 var rootCmd = &cobra.Command{
 	Use:   "kwin-layout",
@@ -267,17 +280,17 @@ windows and move/resize them to the requested geometry.`,
 }
 
 var placeCmd = &cobra.Command{
-	Use:   "place --df <desktopFileName> --geom <x>,<y>,<w>,<h> --cmd \"<command>\" [--anchor <anchor>] [--monitor <id>] [--desktop <id>] [--timeout <duration>]",
+	Use:   "place --app <app-id> --geom <x>,<y>,<w>,<h> --cmd \"<command>\" [--anchor <anchor>] [--monitor <id>] [--desktop <id>] [--timeout <duration>]",
 	Short: "Launch a command and place its window at a specific geometry",
 	Long: `Loads a temporary KWin script via D-Bus that intercepts newly created
-windows matching the specified desktopFileName and moves/resizes them to the
+windows matching the specified application ID and moves/resizes them to the
 requested geometry. Only windows created after the script loads are affected.
 
 Geometry values can be absolute pixels (e.g., 100) or percentages (e.g., 50%).
 Percentages are relative to the target monitor's dimensions.`,
-	Example: `  kwin-layout place --df org.kde.konsole --geom 50,50,900,700 --timeout 8s --cmd "konsole --separate"
-  kwin-layout place --df org.kde.konsole --geom 0,0,50%,100% --anchor top-left --cmd "konsole"
-  kwin-layout place --df org.kde.konsole --geom 0,0,50%,100% --monitor 1 --desktop 2 --cmd "konsole"`,
+	Example: `  kwin-layout place --app org.kde.konsole --geom 50,50,900,700 --timeout 8s --cmd "konsole --separate"
+  kwin-layout place --app org.kde.konsole --geom 0,0,50%,100% --anchor top-left --cmd "konsole"
+  kwin-layout place --app org.kde.konsole --geom 0,0,50%,100% --monitor 1 --desktop 2 --cmd "konsole"`,
 	DisableFlagsInUseLine: true,
 	SilenceUsage:          true,
 	SilenceErrors:         true,
@@ -299,21 +312,23 @@ all specified applications with their configured geometries.`,
 }
 
 var captureCmd = &cobra.Command{
-	Use:   "capture <layout.yaml|layout.yml|layout.json|-> [--timeout <duration>] [--infer-command]",
+	Use:   "capture <layout.yaml|layout.yml|layout.json|-> [flags]",
 	Short: "Capture currently open windows into a layout template",
 	Long: `Captures the geometry/monitor/desktop of currently open windows and writes a YAML
 or JSON template (based on output file extension) suitable for use with "kwin-layout launch".
 
-Only windows with a non-empty desktopFileName are included. Geometry is recorded relative
-to the window's output (monitor) origin, and anchor is set to top-left.
+By default, only windows with a known application ID are included. Use --include-unknown
+to also capture windows without an application ID (these will be matched by window title).
+
+Maximized and fullscreen states are captured and will be restored when launching.
 
 If --infer-command is enabled (default), each preset uses:
-  command: ["gtk-launch", "<desktopFileName>"]
+  command: ["gtk-launch", "<app-id>"]
 This is a best-effort launcher and may not reproduce multi-window apps exactly.`,
 	Example: `  kwin-layout capture layout.yaml
-  kwin-layout capture layout.json
-  kwin-layout capture - --timeout 2s
-  kwin-layout capture layout.yml --infer-command=false`,
+  kwin-layout capture layout.json --include-unknown
+  kwin-layout capture layout.yml --current-desktop
+  kwin-layout capture layout.yaml --monitor DP-1`,
 	Args:          cobra.ExactArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -323,14 +338,14 @@ This is a best-effort launcher and may not reproduce multi-window apps exactly.`
 func init() {
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
 
-	placeCmd.Flags().StringVar(&placeDFFlag, "df", "", "desktopFileName to match (required)")
+	placeCmd.Flags().StringVar(&placeAppFlag, "app", "", "application ID to match (required)")
 	placeCmd.Flags().StringVar(&placeGeomFlag, "geom", "", "geometry as x,y,w,h (values can be pixels or percentages like 50%)")
 	placeCmd.Flags().StringVar(&placeAnchorFlag, "anchor", "top-left", "anchor point for positioning")
 	placeCmd.Flags().StringVar(&placeMonitorFlag, "monitor", "", "target monitor (index like 0, 1 or name like DP-1)")
 	placeCmd.Flags().StringVar(&placeDesktopFlag, "desktop", "", "target virtual desktop (1-based index or name)")
 	placeCmd.Flags().StringVar(&placeTimeoutFlag, "timeout", "8s", "timeout duration (e.g., 8s, 500ms)")
 	placeCmd.Flags().StringVar(&placeCommandFlag, "cmd", "", "command to run (quoted string)")
-	must(placeCmd.MarkFlagRequired("df"))
+	must(placeCmd.MarkFlagRequired("app"))
 	must(placeCmd.MarkFlagRequired("geom"))
 	must(placeCmd.MarkFlagRequired("cmd"))
 
@@ -338,6 +353,9 @@ func init() {
 
 	captureCmd.Flags().StringVar(&captureTimeoutFlag, "timeout", "2s", "capture timeout (e.g., 2s, 500ms)")
 	captureCmd.Flags().BoolVar(&captureInferCommandFlag, "infer-command", true, "infer a best-effort launcher command using gtk-launch")
+	captureCmd.Flags().BoolVar(&captureIncludeUnknown, "include-unknown", false, "include windows without desktopFileName (matched by title)")
+	captureCmd.Flags().BoolVar(&captureCurrentDesktop, "current-desktop", false, "only capture windows on current desktop")
+	captureCmd.Flags().StringVar(&captureMonitorFilter, "monitor", "", "only capture windows on specified monitor")
 
 	rootCmd.AddCommand(placeCmd)
 	rootCmd.AddCommand(launchCmd)
@@ -498,7 +516,7 @@ func parseAndValidatePlace(cmd *cobra.Command, args []string) (Config, error) {
 	jsFile := filepath.Join(tempDir, scriptName+".js")
 
 	return Config{
-		DF:         placeDFFlag,
+		App:        placeAppFlag,
 		Geom:       geom,
 		Anchor:     placeAnchorFlag,
 		Monitor:    placeMonitorFlag,
@@ -568,7 +586,18 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 		scriptName := fmt.Sprintf("kwin-layout-%d-%d-%s", os.Getpid(), i, generateRandomSuffix())
 		jsFile := filepath.Join(tempDir, scriptName+".js")
 
-		js := generateJS(scriptName, preset.DF, geom, anchor, preset.Monitor, preset.Desktop)
+		jsCfg := jsPlacementConfig{
+			ScriptName: scriptName,
+			App:        preset.App,
+			Match:      preset.Match,
+			Anchor:     anchor,
+			Monitor:    preset.Monitor,
+			Desktop:    preset.Desktop,
+			Maximized:  preset.Maximized,
+			FullScreen: preset.FullScreen,
+			Geom:       geom,
+		}
+		js := generateJS(jsCfg)
 		if err := os.WriteFile(jsFile, []byte(js), 0600); err != nil {
 			return &PresetError{Preset: label, Err: fmt.Errorf("failed to write script: %w", err)}
 		}
@@ -683,7 +712,13 @@ func runCapture(cmd *cobra.Command, args []string) error {
 
 	scriptName := fmt.Sprintf("kwin-layout-capture-%d-%s", os.Getpid(), generateRandomSuffix())
 	jsFile := filepath.Join(tempDir, scriptName+".js")
-	js := generateCaptureJS(scriptName, serviceName, captureInferCommandFlag)
+	opts := captureOptions{
+		InferCommand:   captureInferCommandFlag,
+		IncludeUnknown: captureIncludeUnknown,
+		CurrentDesktop: captureCurrentDesktop,
+		MonitorFilter:  captureMonitorFilter,
+	}
+	js := generateCaptureJS(scriptName, serviceName, opts)
 
 	if err := os.WriteFile(jsFile, []byte(js), 0600); err != nil {
 		return fmt.Errorf("failed to write capture JS file: %w", err)
@@ -801,12 +836,15 @@ func unquoteYAMLKeyY(data []byte) []byte {
 
 type capturePayload struct {
 	Presets []struct {
-		Name    string `json:"name"`
-		DF      string `json:"df"`
-		Monitor string `json:"monitor"`
-		Desktop string `json:"desktop"`
-		Anchor  string `json:"anchor"`
-		Geom    struct {
+		Name       string `json:"name"`
+		App        string `json:"app"`
+		Match      string `json:"match"`
+		Monitor    string `json:"monitor"`
+		Desktop    string `json:"desktop"`
+		Anchor     string `json:"anchor"`
+		Maximized  string `json:"maximized"`
+		FullScreen bool   `json:"fullscreen"`
+		Geom       struct {
 			X      string `json:"x"`
 			Y      string `json:"y"`
 			Width  string `json:"width"`
@@ -824,17 +862,21 @@ func buildTemplateFromCapturePayload(payload string) (Template, error) {
 
 	var presets []Preset
 	for _, p := range cp.Presets {
-		df := strings.TrimSpace(p.DF)
-		if df == "" {
+		app := strings.TrimSpace(p.App)
+		match := strings.TrimSpace(p.Match)
+		if app == "" && match == "" {
 			continue
 		}
 
 		pr := Preset{
-			Name:    p.Name,
-			DF:      df,
-			Anchor:  p.Anchor,
-			Monitor: p.Monitor,
-			Desktop: p.Desktop,
+			Name:       p.Name,
+			App:        app,
+			Match:      match,
+			Anchor:     p.Anchor,
+			Monitor:    p.Monitor,
+			Desktop:    p.Desktop,
+			Maximized:  p.Maximized,
+			FullScreen: p.FullScreen,
 			Geometry: PresetGeometry{
 				X:      p.Geom.X,
 				Y:      p.Geom.Y,
@@ -845,15 +887,15 @@ func buildTemplateFromCapturePayload(payload string) (Template, error) {
 
 		if len(p.Command) > 0 {
 			pr.Command = CommandSpec(p.Command)
-		} else if captureInferCommandFlag {
-			pr.Command = CommandSpec([]string{"gtk-launch", df})
+		} else if captureInferCommandFlag && app != "" {
+			pr.Command = CommandSpec([]string{"gtk-launch", app})
 		}
 
 		presets = append(presets, pr)
 	}
 
 	if len(presets) == 0 {
-		return Template{}, &ValidationError{Field: "capture", Message: "no capturable windows found (desktopFileName was empty for all manageable windows)"}
+		return Template{}, &ValidationError{Field: "capture", Message: "no capturable windows found"}
 	}
 
 	return Template{Version: version, Presets: presets}, nil
@@ -887,6 +929,8 @@ func parseTemplate(path string) (Template, error) {
 	return template, nil
 }
 
+var validMaximizedValues = []string{"", "horizontal", "vertical", "both"}
+
 func validateTemplate(t Template) error {
 	if len(t.Presets) == 0 {
 		return &ValidationError{Field: "presets", Message: "at least one preset is required"}
@@ -898,10 +942,19 @@ func validateTemplate(t Template) error {
 			label = fmt.Sprintf("#%d", i)
 		}
 
-		if p.DF == "" {
+		if p.App == "" && p.Match == "" {
 			return &PresetError{
 				Preset: label,
-				Err:    &ValidationError{Field: "df", Message: "required field is missing"},
+				Err:    &ValidationError{Field: "app/match", Message: "either app or match is required"},
+			}
+		}
+
+		if p.Match != "" {
+			if _, err := regexp.Compile(p.Match); err != nil {
+				return &PresetError{
+					Preset: label,
+					Err:    &ValidationError{Field: "match", Value: p.Match, Message: "invalid regex: " + err.Error()},
+				}
 			}
 		}
 
@@ -941,9 +994,29 @@ func validateTemplate(t Template) error {
 				},
 			}
 		}
+
+		if !isValidMaximized(p.Maximized) {
+			return &PresetError{
+				Preset: label,
+				Err: &ValidationError{
+					Field:   "maximized",
+					Value:   p.Maximized,
+					Message: "valid values: horizontal, vertical, both (or empty)",
+				},
+			}
+		}
 	}
 
 	return nil
+}
+
+func isValidMaximized(v string) bool {
+	for _, valid := range validMaximizedValues {
+		if v == valid {
+			return true
+		}
+	}
+	return false
 }
 
 func determineLaunchTimeout(t Template) (time.Duration, error) {
@@ -1108,7 +1181,15 @@ func parsePresetGeometry(pg PresetGeometry) (ParsedGeometry, error) {
 }
 
 func writeJSFile(cfg Config) error {
-	js := generateJS(cfg.ScriptName, cfg.DF, cfg.Geom, cfg.Anchor, cfg.Monitor, cfg.Desktop)
+	jsCfg := jsPlacementConfig{
+		ScriptName: cfg.ScriptName,
+		App:        cfg.App,
+		Anchor:     cfg.Anchor,
+		Monitor:    cfg.Monitor,
+		Desktop:    cfg.Desktop,
+		Geom:       cfg.Geom,
+	}
+	js := generateJS(jsCfg)
 	return os.WriteFile(cfg.JSFile, []byte(js), 0600)
 }
 
@@ -1156,19 +1237,36 @@ func splitCommand(input string) ([]string, error) {
 	return args, nil
 }
 
-func generateJS(scriptName, df string, g ParsedGeometry, anchor, monitor, desktop string) string {
-	scriptNameJSON, _ := json.Marshal(scriptName)
-	dfJSON, _ := json.Marshal(df)
-	anchorJSON, _ := json.Marshal(anchor)
-	monitorJSON, _ := json.Marshal(monitor)
-	desktopJSON, _ := json.Marshal(desktop)
+type jsPlacementConfig struct {
+	ScriptName string
+	App        string
+	Match      string
+	Anchor     string
+	Monitor    string
+	Desktop    string
+	Maximized  string
+	FullScreen bool
+	Geom       ParsedGeometry
+}
+
+func generateJS(cfg jsPlacementConfig) string {
+	scriptNameJSON, _ := json.Marshal(cfg.ScriptName)
+	appJSON, _ := json.Marshal(cfg.App)
+	matchJSON, _ := json.Marshal(cfg.Match)
+	anchorJSON, _ := json.Marshal(cfg.Anchor)
+	monitorJSON, _ := json.Marshal(cfg.Monitor)
+	desktopJSON, _ := json.Marshal(cfg.Desktop)
+	maximizedJSON, _ := json.Marshal(cfg.Maximized)
 
 	return fmt.Sprintf(`// Auto-generated: %s
 var SCRIPT_NAME = %s;
-var TARGET_DF = %s;
+var TARGET_APP = %s;
+var TARGET_MATCH = %s;
 var ANCHOR = %s;
 var MONITOR = %s;
 var DESKTOP = %s;
+var MAXIMIZED = %s;
+var FULLSCREEN = %v;
 var GEOM_X = {value: %d, percent: %v};
 var GEOM_Y = {value: %d, percent: %v};
 var GEOM_W = {value: %d, percent: %v};
@@ -1176,12 +1274,21 @@ var GEOM_H = {value: %d, percent: %v};
 
 function idOf(w) { return "" + w.internalId; }
 
-function dfMatches(w) {
-  var df = w.desktopFileName ? ("" + w.desktopFileName) : "";
-  if (df === TARGET_DF) return true;
-  if (df === (TARGET_DF + ".desktop")) return true;
-  if (df.endsWith("/" + TARGET_DF + ".desktop")) return true;
-  if (df.endsWith("/" + TARGET_DF)) return true;
+function appMatches(w) {
+  if (TARGET_APP === "" && TARGET_MATCH === "") return false;
+  if (TARGET_APP !== "") {
+    var app = w.desktopFileName ? ("" + w.desktopFileName) : "";
+    if (app === TARGET_APP) return true;
+    if (app === (TARGET_APP + ".desktop")) return true;
+    if (app.endsWith("/" + TARGET_APP + ".desktop")) return true;
+    if (app.endsWith("/" + TARGET_APP)) return true;
+  }
+  if (TARGET_MATCH !== "") {
+    try {
+      var re = new RegExp(TARGET_MATCH);
+      if (re.test(w.caption || "")) return true;
+    } catch (e) {}
+  }
   return false;
 }
 
@@ -1268,7 +1375,7 @@ function resolveGeom(mon) {
 var baseline = {};
 for (var i = 0; i < workspace.stackingOrder.length; i++) {
   var w0 = workspace.stackingOrder[i];
-  if (isManageable(w0) && dfMatches(w0)) baseline[idOf(w0)] = true;
+  if (isManageable(w0) && appMatches(w0)) baseline[idOf(w0)] = true;
 }
 
 var handled = false;
@@ -1290,10 +1397,21 @@ function applyAndStick(w) {
 
   print("[kwin-layout] candidate:",
         "caption=", ("" + w.caption),
-        "df=", ("" + w.desktopFileName),
+        "app=", ("" + w.desktopFileName),
         "id=", idOf(w));
 
-  w.frameGeometry = target;
+  if (FULLSCREEN) {
+    w.fullScreen = true;
+  } else {
+    w.frameGeometry = target;
+    if (MAXIMIZED === "both") {
+      try { w.setMaximize(true, true); } catch (e) {}
+    } else if (MAXIMIZED === "horizontal") {
+      try { w.setMaximize(false, true); } catch (e) {}
+    } else if (MAXIMIZED === "vertical") {
+      try { w.setMaximize(true, false); } catch (e) {}
+    }
+  }
 
   if (MONITOR !== "") {
     try { workspace.sendWindowToOutput(w, targetMon); } catch (e) {}
@@ -1312,6 +1430,8 @@ function applyAndStick(w) {
       return;
     }
     triesLeft--;
+
+    if (FULLSCREEN) return;
 
     var g = w.frameGeometry;
     var ok =
@@ -1332,7 +1452,7 @@ function applyAndStick(w) {
 
 function isNewMatch(w) {
   if (!isManageable(w)) return false;
-  if (!dfMatches(w)) return false;
+  if (!appMatches(w)) return false;
 
   var id = idOf(w);
   if (baseline[id]) return false;
@@ -1352,19 +1472,21 @@ for (var i = 0; i < workspace.stackingOrder.length; i++) {
     break;
   }
 }
-`, scriptName, string(scriptNameJSON), string(dfJSON), string(anchorJSON),
-		string(monitorJSON), string(desktopJSON),
-		g.X.Value, g.X.Percent,
-		g.Y.Value, g.Y.Percent,
-		g.W.Value, g.W.Percent,
-		g.H.Value, g.H.Percent)
+`, cfg.ScriptName, string(scriptNameJSON), string(appJSON), string(matchJSON),
+		string(anchorJSON), string(monitorJSON), string(desktopJSON),
+		string(maximizedJSON), cfg.FullScreen,
+		cfg.Geom.X.Value, cfg.Geom.X.Percent,
+		cfg.Geom.Y.Value, cfg.Geom.Y.Percent,
+		cfg.Geom.W.Value, cfg.Geom.W.Percent,
+		cfg.Geom.H.Value, cfg.Geom.H.Percent)
 }
 
-func generateCaptureJS(scriptName, serviceName string, inferCommand bool) string {
+func generateCaptureJS(scriptName, serviceName string, opts captureOptions) string {
 	scriptNameJSON, _ := json.Marshal(scriptName)
 	serviceJSON, _ := json.Marshal(serviceName)
 	pathJSON, _ := json.Marshal(captureObjectPath)
 	ifaceJSON, _ := json.Marshal(captureIface)
+	monitorFilterJSON, _ := json.Marshal(opts.MonitorFilter)
 
 	return fmt.Sprintf(`// Auto-generated capture script: %s
 var SCRIPT_NAME = %s;
@@ -1372,6 +1494,9 @@ var CAP_SERVICE = %s;
 var CAP_PATH = %s;
 var CAP_IFACE = %s;
 var INFER_COMMAND = %v;
+var INCLUDE_UNKNOWN = %v;
+var CURRENT_DESKTOP_ONLY = %v;
+var MONITOR_FILTER = %s;
 
 function isManageable(w) {
   if (!w) return false;
@@ -1383,12 +1508,12 @@ function isManageable(w) {
   return true;
 }
 
-function normalizeDf(df) {
-  df = df ? ("" + df) : "";
-  if (df.endsWith(".desktop")) df = df.slice(0, -8);
-  var slash = df.lastIndexOf("/");
-  if (slash >= 0) df = df.slice(slash + 1);
-  return df;
+function normalizeApp(app) {
+  app = app ? ("" + app) : "";
+  if (app.endsWith(".desktop")) app = app.slice(0, -8);
+  var slash = app.lastIndexOf("/");
+  if (slash >= 0) app = app.slice(slash + 1);
+  return app;
 }
 
 function findOutputForRect(r) {
@@ -1414,6 +1539,40 @@ function desktopIdForWindow(w) {
   return "";
 }
 
+function isOnCurrentDesktop(w) {
+  if (!CURRENT_DESKTOP_ONLY) return true;
+  var curDesk = workspace.currentDesktop;
+  var desks = w.desktops;
+  if (!desks || desks.length === 0) return true;
+  for (var i = 0; i < desks.length; i++) {
+    if (desks[i] === curDesk) return true;
+  }
+  return false;
+}
+
+function isOnMonitor(w, fg) {
+  if (!MONITOR_FILTER) return true;
+  var out = findOutputForRect(fg);
+  return out && out.name === MONITOR_FILTER;
+}
+
+function getMaximizedState(w) {
+  var h = w.maximizedHorizontally || false;
+  var v = w.maximizedVertically || false;
+  if (h && v) return "both";
+  if (h) return "horizontal";
+  if (v) return "vertical";
+  return "";
+}
+
+function sanitizeTitle(title) {
+  return (title || "").replace(/[^a-zA-Z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 40).toLowerCase() || "unknown";
+}
+
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function capture() {
   var wins = null;
   try {
@@ -1428,11 +1587,16 @@ function capture() {
     var w = wins[i];
     if (!isManageable(w)) continue;
 
-    var df0 = w.desktopFileName ? ("" + w.desktopFileName) : "";
-    var df = normalizeDf(df0);
-    if (!df) continue;
+    var app0 = w.desktopFileName ? ("" + w.desktopFileName) : "";
+    var app = normalizeApp(app0);
+    var caption = w.caption ? ("" + w.caption) : "";
+
+    if (!app && !INCLUDE_UNKNOWN) continue;
 
     var fg = w.frameGeometry;
+    if (!isOnCurrentDesktop(w)) continue;
+    if (!isOnMonitor(w, fg)) continue;
+
     var out = findOutputForRect(fg);
     var og = out.geometry;
 
@@ -1440,17 +1604,26 @@ function capture() {
     var ry = Math.round(fg.y - og.y);
 
     seq++;
-    var name = df + "-" + seq;
+    var baseName = app || sanitizeTitle(caption);
+    var name = baseName + "-" + seq;
 
     var cmd = [];
-    if (INFER_COMMAND) cmd = ["gtk-launch", df];
+    if (INFER_COMMAND && app) cmd = ["gtk-launch", app];
+
+    var match = "";
+    if (!app && caption) {
+      match = "^" + escapeRegex(caption) + "$";
+    }
 
     var p = {
       name: name,
-      df: df,
+      app: app,
+      match: match,
       monitor: out && out.name ? ("" + out.name) : "",
       desktop: desktopIdForWindow(w),
       anchor: "top-left",
+      maximized: getMaximizedState(w),
+      fullscreen: w.fullScreen || false,
       geometry: {
         x: "" + rx,
         y: "" + ry,
@@ -1475,7 +1648,8 @@ function capture() {
 }
 
 capture();
-`, scriptName, string(scriptNameJSON), string(serviceJSON), string(pathJSON), string(ifaceJSON), inferCommand)
+`, scriptName, string(scriptNameJSON), string(serviceJSON), string(pathJSON), string(ifaceJSON),
+		opts.InferCommand, opts.IncludeUnknown, opts.CurrentDesktop, string(monitorFilterJSON))
 }
 
 func loadScript(conn *dbus.Conn, jsPath, scriptName string) (string, error) {
