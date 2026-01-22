@@ -1,4 +1,4 @@
-module github.com/zigai/kwin-place
+module github.com/zigai/kwin-layout
 
 go 1.25.6
 
