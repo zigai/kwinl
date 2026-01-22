@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -22,12 +23,13 @@ import (
 )
 
 const (
-	dbusDestination      = "org.kde.KWin"
-	dbusScriptingPath    = "/Scripting"
-	dbusScriptingIface   = "org.kde.kwin.Scripting"
-	dbusScriptIface      = "org.kde.kwin.Script"
-	scriptObjectPrefix   = "/Scripting/Script"
-	defaultTimeoutSec    = 8
+	dbusDestination    = "org.kde.KWin"
+	dbusScriptingPath  = "/Scripting"
+	dbusScriptingIface = "org.kde.kwin.Scripting"
+	dbusScriptIface    = "org.kde.kwin.Script"
+	scriptObjectPrefix = "/Scripting/Script"
+	defaultTimeoutSec  = 8
+
 	exitCodeInternal     = 1
 	exitCodeUsage        = 2
 	exitCodeDBusFailure  = 10
@@ -35,6 +37,9 @@ const (
 	exitCodeLaunchFailed = 20
 	exitCodeInterrupted  = 130
 	exitCodeTerminated   = 143
+
+	captureObjectPath = "/io/github/kwinlayout/Capture"
+	captureIface      = "io.github.kwinlayout.Capture"
 )
 
 var validAnchors = []string{
@@ -87,8 +92,9 @@ type Preset struct {
 }
 
 type Template struct {
-	Presets []Preset `json:"presets" yaml:"presets"`
+	Version string   `json:"version,omitempty" yaml:"version,omitempty"`
 	Timeout string   `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	Presets []Preset `json:"presets" yaml:"presets"`
 }
 
 type CommandSpec []string
@@ -237,6 +243,8 @@ func (e *ScriptPathWarning) Error() string {
 }
 
 var (
+	version = "1.0.0"
+
 	placeDFFlag       string
 	placeGeomFlag     string
 	placeAnchorFlag   string
@@ -245,13 +253,17 @@ var (
 	placeTimeoutFlag  string
 	placeCommandFlag  string
 	launchTimeoutFlag string
+
+	captureTimeoutFlag      string
+	captureInferCommandFlag bool
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "kwin-place",
+	Use:   "kwin-layout",
 	Short: "KWin window placement tool",
-	Long: `kwin-place loads temporary KWin scripts via D-Bus that intercept newly created
+	Long: `kwin-layout loads temporary KWin scripts via D-Bus that intercept newly created
 windows and move/resize them to the requested geometry.`,
+	Version: version,
 }
 
 var placeCmd = &cobra.Command{
@@ -263,9 +275,9 @@ requested geometry. Only windows created after the script loads are affected.
 
 Geometry values can be absolute pixels (e.g., 100) or percentages (e.g., 50%).
 Percentages are relative to the target monitor's dimensions.`,
-	Example: `  kwin-place place --df org.kde.konsole --geom 50,50,900,700 --timeout 8s --cmd "konsole --separate"
-  kwin-place place --df org.kde.konsole --geom 0,0,50%,100% --anchor top-left --cmd "konsole"
-  kwin-place place --df org.kde.konsole --geom 0,0,50%,100% --monitor 1 --desktop 2 --cmd "konsole"`,
+	Example: `  kwin-layout place --df org.kde.konsole --geom 50,50,900,700 --timeout 8s --cmd "konsole --separate"
+  kwin-layout place --df org.kde.konsole --geom 0,0,50%,100% --anchor top-left --cmd "konsole"
+  kwin-layout place --df org.kde.konsole --geom 0,0,50%,100% --monitor 1 --desktop 2 --cmd "konsole"`,
 	DisableFlagsInUseLine: true,
 	SilenceUsage:          true,
 	SilenceErrors:         true,
@@ -278,15 +290,39 @@ var launchCmd = &cobra.Command{
 	Short: "Batch launch windows from a YAML/JSON template",
 	Long: `Reads a template file containing multiple window presets and launches
 all specified applications with their configured geometries.`,
-	Example: `  kwin-place launch layout.yaml
-  kwin-place launch workspace.json --timeout 15s`,
+	Example: `  kwin-layout launch layout.yaml
+  kwin-layout launch workspace.json --timeout 15s`,
 	Args:          cobra.ExactArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE:          runLaunch,
 }
 
+var captureCmd = &cobra.Command{
+	Use:   "capture <layout.yaml|layout.yml|layout.json|-> [--timeout <duration>] [--infer-command]",
+	Short: "Capture currently open windows into a layout template",
+	Long: `Captures the geometry/monitor/desktop of currently open windows and writes a YAML
+or JSON template (based on output file extension) suitable for use with "kwin-layout launch".
+
+Only windows with a non-empty desktopFileName are included. Geometry is recorded relative
+to the window's output (monitor) origin, and anchor is set to top-left.
+
+If --infer-command is enabled (default), each preset uses:
+  command: ["gtk-launch", "<desktopFileName>"]
+This is a best-effort launcher and may not reproduce multi-window apps exactly.`,
+	Example: `  kwin-layout capture layout.yaml
+  kwin-layout capture layout.json
+  kwin-layout capture - --timeout 2s
+  kwin-layout capture layout.yml --infer-command=false`,
+	Args:          cobra.ExactArgs(1),
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runCapture,
+}
+
 func init() {
+	rootCmd.SetVersionTemplate("{{.Version}}\n")
+
 	placeCmd.Flags().StringVar(&placeDFFlag, "df", "", "desktopFileName to match (required)")
 	placeCmd.Flags().StringVar(&placeGeomFlag, "geom", "", "geometry as x,y,w,h (values can be pixels or percentages like 50%)")
 	placeCmd.Flags().StringVar(&placeAnchorFlag, "anchor", "top-left", "anchor point for positioning")
@@ -300,8 +336,12 @@ func init() {
 
 	launchCmd.Flags().StringVar(&launchTimeoutFlag, "timeout", "", "timeout override (e.g., 10s)")
 
+	captureCmd.Flags().StringVar(&captureTimeoutFlag, "timeout", "2s", "capture timeout (e.g., 2s, 500ms)")
+	captureCmd.Flags().BoolVar(&captureInferCommandFlag, "infer-command", true, "infer a best-effort launcher command using gtk-launch")
+
 	rootCmd.AddCommand(placeCmd)
 	rootCmd.AddCommand(launchCmd)
+	rootCmd.AddCommand(captureCmd)
 }
 
 func must(err error) {
@@ -312,7 +352,7 @@ func must(err error) {
 
 func main() {
 	log.SetFlags(0)
-	log.SetPrefix("kwin-place: ")
+	log.SetPrefix("kwin-layout: ")
 	if err := rootCmd.Execute(); err != nil {
 		log.Println(err)
 		os.Exit(exitCodeFor(err))
@@ -450,7 +490,7 @@ func parseAndValidatePlace(cmd *cobra.Command, args []string) (Config, error) {
 
 	scriptName := generateScriptName()
 
-	tempDir, err := os.MkdirTemp("", "kwin-place-*")
+	tempDir, err := os.MkdirTemp("", "kwin-layout-*")
 	if err != nil {
 		return Config{}, fmt.Errorf("failed to create temp dir: %w", err)
 	}
@@ -488,7 +528,7 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	tempDir, err := os.MkdirTemp("", "kwin-place-launch-*")
+	tempDir, err := os.MkdirTemp("", "kwin-layout-launch-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)
 	}
@@ -525,7 +565,7 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 			return &PresetError{Preset: label, Field: "geometry", Err: err}
 		}
 
-		scriptName := fmt.Sprintf("kwin-place-%d-%d-%s", os.Getpid(), i, generateRandomSuffix())
+		scriptName := fmt.Sprintf("kwin-layout-%d-%d-%s", os.Getpid(), i, generateRandomSuffix())
 		jsFile := filepath.Join(tempDir, scriptName+".js")
 
 		js := generateJS(scriptName, preset.DF, geom, anchor, preset.Monitor, preset.Desktop)
@@ -565,6 +605,258 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 	}
 
 	return waitAndCleanup(timeout, cmdProcs)
+}
+
+type captureReceiver struct {
+	ch chan string
+}
+
+func (r *captureReceiver) Send(payload string) (bool, *dbus.Error) {
+	select {
+	case r.ch <- payload:
+	default:
+	}
+	return true, nil
+}
+
+func runCapture(cmd *cobra.Command, args []string) error {
+	outPath := strings.TrimSpace(args[0])
+	if outPath == "" {
+		return &ValidationError{Field: "output", Message: "output path is required (use '-' for stdout)"}
+	}
+	format := "yaml"
+	if outPath != "-" {
+		ext := strings.ToLower(filepath.Ext(outPath))
+		switch ext {
+		case ".yaml", ".yml":
+			format = "yaml"
+		case ".json":
+			format = "json"
+		default:
+			return &ValidationError{Field: "output", Value: outPath, Message: "expected .yaml/.yml/.json output file (or '-' for stdout)"}
+		}
+	}
+
+	timeout, err := parseTimeout(captureTimeoutFlag)
+	if err != nil {
+		return err
+	}
+
+	tempDir, err := os.MkdirTemp("", "kwin-layout-capture-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	conn, err := dbus.ConnectSessionBus()
+	if err != nil {
+		return &ExitError{
+			Code: exitCodeDBusFailure,
+			Err:  fmt.Errorf("cannot connect to session D-Bus: %w", err),
+		}
+	}
+	defer conn.Close()
+
+	recv := &captureReceiver{ch: make(chan string, 1)}
+	serviceName := fmt.Sprintf("io.github.kwinlayout.Capture.p%d.r%s", os.Getpid(), generateRandomSuffix())
+
+	reply, err := conn.RequestName(serviceName, dbus.NameFlagDoNotQueue)
+	if err != nil {
+		return &ExitError{
+			Code: exitCodeDBusFailure,
+			Err:  fmt.Errorf("cannot acquire capture D-Bus name %q: %w", serviceName, err),
+		}
+	}
+	if reply != dbus.RequestNameReplyPrimaryOwner {
+		return &ExitError{
+			Code: exitCodeDBusFailure,
+			Err:  fmt.Errorf("cannot acquire capture D-Bus name %q: already owned", serviceName),
+		}
+	}
+
+	if err := conn.Export(recv, dbus.ObjectPath(captureObjectPath), captureIface); err != nil {
+		return &ExitError{
+			Code: exitCodeDBusFailure,
+			Err:  fmt.Errorf("cannot export capture D-Bus object: %w", err),
+		}
+	}
+
+	scriptName := fmt.Sprintf("kwin-layout-capture-%d-%s", os.Getpid(), generateRandomSuffix())
+	jsFile := filepath.Join(tempDir, scriptName+".js")
+	js := generateCaptureJS(scriptName, serviceName, captureInferCommandFlag)
+
+	if err := os.WriteFile(jsFile, []byte(js), 0600); err != nil {
+		return fmt.Errorf("failed to write capture JS file: %w", err)
+	}
+
+	scriptPath, err := loadScript(conn, jsFile, scriptName)
+	if err != nil {
+		var warning *ScriptPathWarning
+		if errors.As(err, &warning) {
+			log.Printf("warning: %v", warning)
+		} else {
+			return &ExitError{
+				Code: exitCodeLoadFailed,
+				Err:  fmt.Errorf("loadScript failed: %w", err),
+			}
+		}
+	}
+	defer unloadScript(conn, scriptName)
+
+	if err := runScript(conn, scriptName, scriptPath); err != nil {
+		return &ExitError{
+			Code: exitCodeLoadFailed,
+			Err:  err,
+		}
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	var payload string
+	select {
+	case payload = <-recv.ch:
+	case <-timer.C:
+		return &ExitError{
+			Code: exitCodeLoadFailed,
+			Err:  fmt.Errorf("capture timed out after %s (no payload received from KWin script)", timeout),
+		}
+	}
+
+	template, err := buildTemplateFromCapturePayload(payload)
+	if err != nil {
+		return &ExitError{
+			Code: exitCodeLoadFailed,
+			Err:  fmt.Errorf("invalid capture payload: %w", err),
+		}
+	}
+
+	var data []byte
+	if format == "json" {
+		data, err = json.MarshalIndent(template, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+		data = append(data, '\n')
+	} else {
+		data, err = marshalTemplateYAML(template)
+		if err != nil {
+			return err
+		}
+	}
+
+	if outPath == "-" {
+		_, _ = os.Stdout.Write(data)
+		return nil
+	}
+
+	if err := os.WriteFile(outPath, data, 0600); err != nil {
+		return fmt.Errorf("failed to write %q: %w", outPath, err)
+	}
+
+	return nil
+}
+
+func marshalTemplateYAML(template Template) ([]byte, error) {
+	var node yaml.Node
+	if err := node.Encode(template); err != nil {
+		return nil, fmt.Errorf("failed to encode YAML: %w", err)
+	}
+	setCommandFlowStyle(&node)
+	data, err := yaml.Marshal(&node)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal YAML: %w", err)
+	}
+	return unquoteYAMLKeyY(data), nil
+}
+
+func setCommandFlowStyle(node *yaml.Node) {
+	switch node.Kind {
+	case yaml.DocumentNode:
+		for _, c := range node.Content {
+			setCommandFlowStyle(c)
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			k := node.Content[i]
+			v := node.Content[i+1]
+			if k.Kind == yaml.ScalarNode && k.Value == "command" && v.Kind == yaml.SequenceNode {
+				v.Style = yaml.FlowStyle
+			}
+			setCommandFlowStyle(v)
+		}
+	case yaml.SequenceNode:
+		for _, c := range node.Content {
+			setCommandFlowStyle(c)
+		}
+	}
+}
+
+var yamlQuotedYKeyRE = regexp.MustCompile(`(?m)^(\s*)"y":`)
+
+func unquoteYAMLKeyY(data []byte) []byte {
+	// yaml.v3 quotes "y" due to YAML 1.1 boolean rules; drop quotes for readability.
+	return yamlQuotedYKeyRE.ReplaceAll(data, []byte("${1}y:"))
+}
+
+type capturePayload struct {
+	Presets []struct {
+		Name    string `json:"name"`
+		DF      string `json:"df"`
+		Monitor string `json:"monitor"`
+		Desktop string `json:"desktop"`
+		Anchor  string `json:"anchor"`
+		Geom    struct {
+			X      string `json:"x"`
+			Y      string `json:"y"`
+			Width  string `json:"width"`
+			Height string `json:"height"`
+		} `json:"geometry"`
+		Command []string `json:"command"`
+	} `json:"presets"`
+}
+
+func buildTemplateFromCapturePayload(payload string) (Template, error) {
+	var cp capturePayload
+	if err := json.Unmarshal([]byte(payload), &cp); err != nil {
+		return Template{}, err
+	}
+
+	var presets []Preset
+	for _, p := range cp.Presets {
+		df := strings.TrimSpace(p.DF)
+		if df == "" {
+			continue
+		}
+
+		pr := Preset{
+			Name:    p.Name,
+			DF:      df,
+			Anchor:  p.Anchor,
+			Monitor: p.Monitor,
+			Desktop: p.Desktop,
+			Geometry: PresetGeometry{
+				X:      p.Geom.X,
+				Y:      p.Geom.Y,
+				Width:  p.Geom.Width,
+				Height: p.Geom.Height,
+			},
+		}
+
+		if len(p.Command) > 0 {
+			pr.Command = CommandSpec(p.Command)
+		} else if captureInferCommandFlag {
+			pr.Command = CommandSpec([]string{"gtk-launch", df})
+		}
+
+		presets = append(presets, pr)
+	}
+
+	if len(presets) == 0 {
+		return Template{}, &ValidationError{Field: "capture", Message: "no capturable windows found (desktopFileName was empty for all manageable windows)"}
+	}
+
+	return Template{Version: version, Presets: presets}, nil
 }
 
 func parseTemplate(path string) (Template, error) {
@@ -699,7 +991,7 @@ func parseTimeout(s string) (time.Duration, error) {
 }
 
 func generateScriptName() string {
-	return fmt.Sprintf("kwin-place-%d-%s", os.Getpid(), generateRandomSuffix())
+	return fmt.Sprintf("kwin-layout-%d-%s", os.Getpid(), generateRandomSuffix())
 }
 
 func generateRandomSuffix() string {
@@ -996,7 +1288,7 @@ function applyAndStick(w) {
   if (handled) return;
   handled = true;
 
-  print("[kwin-place] candidate:",
+  print("[kwin-layout] candidate:",
         "caption=", ("" + w.caption),
         "df=", ("" + w.desktopFileName),
         "id=", idOf(w));
@@ -1066,6 +1358,124 @@ for (var i = 0; i < workspace.stackingOrder.length; i++) {
 		g.Y.Value, g.Y.Percent,
 		g.W.Value, g.W.Percent,
 		g.H.Value, g.H.Percent)
+}
+
+func generateCaptureJS(scriptName, serviceName string, inferCommand bool) string {
+	scriptNameJSON, _ := json.Marshal(scriptName)
+	serviceJSON, _ := json.Marshal(serviceName)
+	pathJSON, _ := json.Marshal(captureObjectPath)
+	ifaceJSON, _ := json.Marshal(captureIface)
+
+	return fmt.Sprintf(`// Auto-generated capture script: %s
+var SCRIPT_NAME = %s;
+var CAP_SERVICE = %s;
+var CAP_PATH = %s;
+var CAP_IFACE = %s;
+var INFER_COMMAND = %v;
+
+function isManageable(w) {
+  if (!w) return false;
+  if (w.deleted) return false;
+  if (w.specialWindow) return false;
+  if (w.popupWindow) return false;
+  if (w.dock) return false;
+  if (w.desktopWindow) return false;
+  return true;
+}
+
+function normalizeDf(df) {
+  df = df ? ("" + df) : "";
+  if (df.endsWith(".desktop")) df = df.slice(0, -8);
+  var slash = df.lastIndexOf("/");
+  if (slash >= 0) df = df.slice(slash + 1);
+  return df;
+}
+
+function findOutputForRect(r) {
+  var cx = Math.round(r.x + r.width / 2);
+  var cy = Math.round(r.y + r.height / 2);
+  var screens = workspace.screens;
+  for (var i = 0; i < screens.length; i++) {
+    var g = screens[i].geometry;
+    if (cx >= g.x && cx < g.x + g.width && cy >= g.y && cy < g.y + g.height) {
+      return screens[i];
+    }
+  }
+  return workspace.activeScreen;
+}
+
+function desktopIdForWindow(w) {
+  try {
+    if (w.desktops && w.desktops.length > 0) {
+      var d = w.desktops[0];
+      if (d && d.name) return "" + d.name;
+    }
+  } catch (e) {}
+  return "";
+}
+
+function capture() {
+  var wins = null;
+  try {
+    if (typeof workspace.windowList === "function") wins = workspace.windowList();
+  } catch (e) {}
+  if (!wins) wins = workspace.stackingOrder;
+
+  var presets = [];
+  var seq = 0;
+
+  for (var i = 0; i < wins.length; i++) {
+    var w = wins[i];
+    if (!isManageable(w)) continue;
+
+    var df0 = w.desktopFileName ? ("" + w.desktopFileName) : "";
+    var df = normalizeDf(df0);
+    if (!df) continue;
+
+    var fg = w.frameGeometry;
+    var out = findOutputForRect(fg);
+    var og = out.geometry;
+
+    var rx = Math.round(fg.x - og.x);
+    var ry = Math.round(fg.y - og.y);
+
+    seq++;
+    var name = df + "-" + seq;
+
+    var cmd = [];
+    if (INFER_COMMAND) cmd = ["gtk-launch", df];
+
+    var p = {
+      name: name,
+      df: df,
+      monitor: out && out.name ? ("" + out.name) : "",
+      desktop: desktopIdForWindow(w),
+      anchor: "top-left",
+      geometry: {
+        x: "" + rx,
+        y: "" + ry,
+        width: "" + Math.round(fg.width),
+        height: "" + Math.round(fg.height)
+      },
+      command: cmd
+    };
+
+    presets.push(p);
+  }
+
+  var payload = JSON.stringify({ presets: presets });
+
+  try {
+    callDBus(CAP_SERVICE, CAP_PATH, CAP_IFACE, "Send", payload);
+  } catch (e) {}
+
+  try {
+    callDBus("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript", SCRIPT_NAME);
+  } catch (e) {}
+}
+
+capture();
+`, scriptName, string(scriptNameJSON), string(serviceJSON), string(pathJSON), string(ifaceJSON), inferCommand)
 }
 
 func loadScript(conn *dbus.Conn, jsPath, scriptName string) (string, error) {
