@@ -1,14 +1,12 @@
-# kwin-place
+# kwin-layout
 
 A CLI tool that launches a command and places its window at a specific geometry using KWin's scripting API.
 
 ## Features
 
-- Loads a temporary KWin JavaScript script via session D-Bus
-- Moves/resizes only newly-created windows (existing windows are not affected)
-- Supports negative coordinates for multi-monitor setups
-- Automatically unloads the script after timeout
-- Batch launching via YAML/JSON templates
+- Place: launch a single app and move/resize its newly created window to a specific geometry
+- Launch: apply a YAML/JSON layout to start and arrange multiple apps at once
+- Capture: snapshot current windows into a reusable YAML/JSON layout template
 
 ## Requirements
 
@@ -18,20 +16,20 @@ A CLI tool that launches a command and places its window at a specific geometry 
 ## Installation
 
 ```bash
-go install github.com/zigai/kwin-place@latest
+go install github.com/zigai/kwin-layout@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/zigai/kwin-place.git
-cd kwin-place
-go build -o kwin-place .
+git clone https://github.com/zigai/kwin-layout.git
+cd kwin-layout
+go build -o kwin-layout .
 ```
 
 ## Help
 
-#### kwin-place place
+#### kwin-layout place
 
 ```
 Loads a temporary KWin script via D-Bus that intercepts newly created
@@ -42,12 +40,12 @@ Geometry values can be absolute pixels (e.g., 100) or percentages (e.g., 50%).
 Percentages are relative to the target monitor's dimensions.
 
 Usage:
-  kwin-place place --df <desktopFileName> --geom <x>,<y>,<w>,<h> --cmd "<command>" [--anchor <anchor>] [--monitor <id>] [--desktop <id>] [--timeout <duration>]
+  kwin-layout place --df <desktopFileName> --geom <x>,<y>,<w>,<h> --cmd "<command>" [--anchor <anchor>] [--monitor <id>] [--desktop <id>] [--timeout <duration>]
 
 Examples:
-  kwin-place place --df org.kde.konsole --geom 50,50,900,700 --timeout 8s --cmd "konsole --separate"
-  kwin-place place --df org.kde.konsole --geom 0,0,50%,100% --anchor top-left --cmd "konsole"
-  kwin-place place --df org.kde.konsole --geom 0,0,50%,100% --monitor 1 --desktop 2 --cmd "konsole"
+  kwin-layout place --df org.kde.konsole --geom 50,50,900,700 --timeout 8s --cmd "konsole --separate"
+  kwin-layout place --df org.kde.konsole --geom 0,0,50%,100% --anchor top-left --cmd "konsole"
+  kwin-layout place --df org.kde.konsole --geom 0,0,50%,100% --monitor 1 --desktop 2 --cmd "konsole"
 
 Flags:
       --anchor string    anchor point for positioning (default "top-left")
@@ -60,32 +58,44 @@ Flags:
       --timeout string   timeout duration (e.g., 8s, 500ms) (default "8s")
 ```
 
-#### kwin-place launch
+#### kwin-layout launch
 
 ```
-Reads a template file containing multiple window presets and launches
-all specified applications with their configured geometries.
+kwin-layout capture --help
+Captures the geometry/monitor/desktop of currently open windows and writes a YAML
+or JSON template (based on output file extension) suitable for use with "kwin-layout launch".
+
+Only windows with a non-empty desktopFileName are included. Geometry is recorded relative
+to the window's output (monitor) origin, and anchor is set to top-left.
+
+If --infer-command is enabled (default), each preset uses:
+  command: ["gtk-launch", "<desktopFileName>"]
+This is a best-effort launcher and may not reproduce multi-window apps exactly.
 
 Usage:
-  kwin-place launch <config.yaml|config.json> [--timeout <duration>] [flags]
+  kwin-layout capture <layout.yaml|layout.yml|layout.json|-> [--timeout <duration>] [--infer-command] [flags]
 
 Examples:
-  kwin-place launch layout.yaml
-  kwin-place launch workspace.json --timeout 15s
+  kwin-layout capture layout.yaml
+  kwin-layout capture layout.json
+  kwin-layout capture - --timeout 2s
+  kwin-layout capture layout.yml --infer-command=false
 
 Flags:
-  -h, --help             help for launch
-      --timeout string   timeout override (e.g., 10s)
+  -h, --help             help for capture
+      --infer-command    infer a best-effort launcher command using gtk-launch (default true)
+      --timeout string   capture timeout (e.g., 2s, 500ms) (default "2s")
 ```
 
 ### Template format (YAML/JSON)
 
 ```yaml
+version: 1.0.0
 timeout: 8s
 presets:
   - name: terminal
     df: org.kde.konsole
-    command: "konsole --separate"
+    command: [konsole, --separate]
     geometry:
       x: 50
       y: 50
@@ -96,7 +106,30 @@ presets:
     desktop: 1
 ```
 
-`command` can be either a quoted string (split into args, no shell expansion) or an explicit array of strings.
+```json
+{
+  "version": "1.0.0",
+  "timeout": "8s",
+  "presets": [
+    {
+      "name": "terminal",
+      "df": "org.kde.konsole",
+      "command": ["konsole", "--separate"],
+      "geometry": {
+        "x": 50,
+        "y": 50,
+        "width": 900,
+        "height": 700
+      },
+      "anchor": "top-left",
+      "monitor": "0",
+      "desktop": "1"
+    }
+  ]
+}
+```
+
+`command` can be either a quoted string (split into args, no shell expansion) or an explicit array of strings. Capture emits the array form.
 
 ## License
 
