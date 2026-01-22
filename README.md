@@ -1,6 +1,6 @@
 # kwin-layout
 
-A CLI tool that launches a command and places its window at a specific geometry using KWin's scripting API.
+Declarative window placement for KWin: launch programs into predefined geometries and batch-start full layouts from YAML/JSON templates.
 
 ## Features
 
@@ -62,6 +62,34 @@ Flags:
 
 ```
 kwin-layout capture --help
+Captures the geometry/monitor/desktop of currently open windows and writes a YAML
+or JSON template (based on output file extension) suitable for use with "kwin-layout launch".
+
+Only windows with a non-empty desktopFileName are included. Geometry is recorded relative
+to the window's output (monitor) origin, and anchor is set to top-left.
+
+If --infer-command is enabled (default), each preset uses:
+  command: ["gtk-launch", "<desktopFileName>"]
+This is a best-effort launcher and may not reproduce multi-window apps exactly.
+
+Usage:
+  kwin-layout capture <layout.yaml|layout.yml|layout.json|-> [--timeout <duration>] [--infer-command] [flags]
+
+Examples:
+  kwin-layout capture layout.yaml
+  kwin-layout capture layout.json
+  kwin-layout capture - --timeout 2s
+  kwin-layout capture layout.yml --infer-command=false
+
+Flags:
+  -h, --help             help for capture
+      --infer-command    infer a best-effort launcher command using gtk-launch (default true)
+      --timeout string   capture timeout (e.g., 2s, 500ms) (default "2s")
+```
+
+#### kwin-layout capture
+
+```
 Captures the geometry/monitor/desktop of currently open windows and writes a YAML
 or JSON template (based on output file extension) suitable for use with "kwin-layout launch".
 
