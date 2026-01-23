@@ -8,6 +8,7 @@ Declarative window placement for KWin: launch programs into predefined geometrie
 - Launch: apply a YAML/JSON layout to start and arrange multiple apps at once
 - Capture: snapshot current windows into a reusable YAML/JSON layout template
 - Validate: check a layout file for errors without launching anything
+- Cleanup: unload orphaned kwin-layout scripts from KWin
 
 ## Requirements
 
@@ -34,29 +35,38 @@ go build -o kwin-layout .
 
 ```
 Loads a temporary KWin script via D-Bus that intercepts newly created
-windows matching the specified application ID and moves/resizes them to the
-requested geometry. Only windows created after the script loads are affected.
+windows matching the specified application ID or title pattern and moves/resizes
+them to the requested geometry. Only windows created after the script loads are affected.
 
 Geometry values can be absolute pixels (e.g., 100) or percentages (e.g., 50%).
 Percentages are relative to the target monitor's dimensions.
 
 Usage:
-  kwin-layout place --app <app-id> --geom <x>,<y>,<w>,<h> --cmd "<command>" [--anchor <anchor>] [--monitor <id>] [--desktop <id>] [--timeout <duration>]
+  kwin-layout place [--app <app-id>] [--match <regex>] --geom <x>,<y>,<w>,<h> --cmd "<command>" [flags]
 
 Examples:
   kwin-layout place --app org.kde.konsole --geom 50,50,900,700 --timeout 8s --cmd "konsole --separate"
   kwin-layout place --app org.kde.konsole --geom 0,0,50%,100% --anchor top-left --cmd "konsole"
-  kwin-layout place --app org.kde.konsole --geom 0,0,50%,100% --monitor 1 --desktop 2 --cmd "konsole"
+  kwin-layout place --match "^Firefox.*Private" --geom 0,0,50%,100% --cmd "firefox --private-window"
+  kwin-layout place --app firefox --match "YouTube" --geom 0,0,50%,100% --cmd firefox
 
 Flags:
       --anchor string    anchor point for positioning (default "top-left")
+      --app string       application ID to match
       --cmd string       command to run (quoted string)
       --desktop string   target virtual desktop (1-based index or name)
-      --app string       application ID to match (required)
       --geom string      geometry as x,y,w,h (values can be pixels or percentages like 50%)
   -h, --help             help for place
+      --keep             keep script active and re-enforce geometry
+      --match string     regex pattern to match window title
       --monitor string   target monitor (index like 0, 1 or name like DP-1)
       --timeout string   timeout duration (e.g., 8s, 500ms) (default "8s")
+
+Global Flags:
+  -v, --verbose   verbose output
+
+Note: At least one of --app or --match is required. When both are provided,
+either can trigger a match (OR logic).
 ```
 
 #### kwin-layout launch
@@ -75,6 +85,9 @@ Examples:
 Flags:
   -h, --help             help for launch
       --timeout string   timeout override (e.g., 10s)
+
+Global Flags:
+  -v, --verbose   verbose output
 ```
 
 #### kwin-layout capture
@@ -108,6 +121,9 @@ Flags:
       --infer-command      infer a best-effort launcher command using gtk-launch (default true)
       --monitor string     only capture windows on specified monitor
       --timeout string     capture timeout (e.g., 2s, 500ms) (default "2s")
+
+Global Flags:
+  -v, --verbose   verbose output
 ```
 
 #### kwin-layout validate
@@ -125,6 +141,29 @@ Examples:
 
 Flags:
   -h, --help   help for validate
+
+Global Flags:
+  -v, --verbose   verbose output
+```
+
+#### kwin-layout cleanup
+
+```
+Discovers and unloads KWin scripts matching kwin-layout-* pattern.
+
+Usage:
+  kwin-layout cleanup [flags]
+
+Examples:
+  kwin-layout cleanup --dry-run
+  kwin-layout cleanup
+
+Flags:
+      --dry-run   list without unloading
+  -h, --help      help for cleanup
+
+Global Flags:
+  -v, --verbose   verbose output
 ```
 
 ### Template format (YAML/JSON)
@@ -154,7 +193,7 @@ presets:
 | `name` | yes | Preset identifier |
 | `app` | one of app/match | Application ID to match (e.g., `org.kde.konsole`) |
 | `match` | one of app/match | Regex pattern to match window title (e.g., `^Firefox$`) |
-| `command` | yes | Command to launch (array or quoted string) |
+| `command` | yes | Command to launch (array recommended, string accepted) |
 | `geometry` | yes | Window geometry with `x`, `y`, `width`, `height` |
 | `anchor` | no | Anchor point for positioning (default: `top-left`) |
 | `monitor` | no | Target monitor (index or name like `DP-1`) |
@@ -162,7 +201,25 @@ presets:
 | `maximized` | no | Maximize state: `horizontal`, `vertical`, or `both` |
 | `fullscreen` | no | Set to `true` to make window fullscreen |
 
-`command` can be either a quoted string (split into args, no shell expansion) or an explicit array of strings. Capture emits the array form.
+#### Command specification
+
+The recommended format is an explicit array of strings:
+
+```yaml
+command: ["konsole", "--separate", "-e", "htop"]
+```
+
+A scalar string is also accepted for convenience:
+
+```yaml
+command: "konsole --separate -e htop"
+```
+
+Environment variables are expanded in command arguments using `${VAR}` or `$VAR` syntax:
+
+```yaml
+command: ["${HOME}/scripts/my-app.sh", "--config", "$XDG_CONFIG_HOME/app.conf"]
+```
 
 Windows can be matched by either `app` (application ID) or `match` (title regex). At least one must be specified. When both are present, either can trigger a match.
 

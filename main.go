@@ -40,6 +40,9 @@ const (
 
 	captureObjectPath = "/io/github/kwinlayout/Capture"
 	captureIface      = "io.github.kwinlayout.Capture"
+
+	placeObjectPath = "/io/github/kwinlayout/Place"
+	placeIface      = "io.github.kwinlayout.Place"
 )
 
 var validAnchors = []string{
@@ -62,6 +65,7 @@ type ParsedGeometry struct {
 
 type Config struct {
 	App        string
+	Match      string
 	Geom       ParsedGeometry
 	Anchor     string
 	Monitor    string
@@ -248,13 +252,17 @@ func (e *ScriptPathWarning) Error() string {
 var (
 	version = "1.0.0"
 
+	verboseFlag bool
+
 	placeAppFlag      string
+	placeMatchFlag    string
 	placeGeomFlag     string
 	placeAnchorFlag   string
 	placeMonitorFlag  string
 	placeDesktopFlag  string
 	placeTimeoutFlag  string
 	placeCommandFlag  string
+	placeKeepFlag     bool
 	launchTimeoutFlag string
 
 	captureTimeoutFlag      string
@@ -280,17 +288,21 @@ windows and move/resize them to the requested geometry.`,
 }
 
 var placeCmd = &cobra.Command{
-	Use:   "place --app <app-id> --geom <x>,<y>,<w>,<h> --cmd \"<command>\" [--anchor <anchor>] [--monitor <id>] [--desktop <id>] [--timeout <duration>]",
+	Use:   "place [--app <app-id>] [--match <regex>] --geom <x>,<y>,<w>,<h> --cmd \"<command>\" [flags]",
 	Short: "Launch a command and place its window at a specific geometry",
 	Long: `Loads a temporary KWin script via D-Bus that intercepts newly created
-windows matching the specified application ID and moves/resizes them to the
-requested geometry. Only windows created after the script loads are affected.
+windows matching the specified application ID or title pattern and moves/resizes
+them to the requested geometry. Only windows created after the script loads are affected.
 
 Geometry values can be absolute pixels (e.g., 100) or percentages (e.g., 50%).
-Percentages are relative to the target monitor's dimensions.`,
+Percentages are relative to the target monitor's dimensions.
+
+At least one of --app or --match is required. When both are provided, either can
+trigger a match (OR logic).`,
 	Example: `  kwin-layout place --app org.kde.konsole --geom 50,50,900,700 --timeout 8s --cmd "konsole --separate"
   kwin-layout place --app org.kde.konsole --geom 0,0,50%,100% --anchor top-left --cmd "konsole"
-  kwin-layout place --app org.kde.konsole --geom 0,0,50%,100% --monitor 1 --desktop 2 --cmd "konsole"`,
+  kwin-layout place --match "^Firefox.*Private" --geom 0,0,50%,100% --cmd "firefox --private-window"
+  kwin-layout place --app firefox --match "YouTube" --geom 0,0,50%,100% --cmd firefox`,
 	DisableFlagsInUseLine: true,
 	SilenceUsage:          true,
 	SilenceErrors:         true,
@@ -347,17 +359,33 @@ var validateCmd = &cobra.Command{
 	RunE:          runValidate,
 }
 
+var cleanupCmd = &cobra.Command{
+	Use:   "cleanup",
+	Short: "Unload orphaned kwin-layout scripts",
+	Long:  `Discovers and unloads KWin scripts matching kwin-layout-* pattern.`,
+	Example: `  kwin-layout cleanup --dry-run
+  kwin-layout cleanup`,
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runCleanup,
+}
+
+var cleanupDryRunFlag bool
+
 func init() {
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
+	rootCmd.PersistentFlags().BoolVarP(&verboseFlag, "verbose", "v", false, "verbose output")
 
-	placeCmd.Flags().StringVar(&placeAppFlag, "app", "", "application ID to match (required)")
+	placeCmd.Flags().StringVar(&placeAppFlag, "app", "", "application ID to match")
+	placeCmd.Flags().StringVar(&placeMatchFlag, "match", "", "regex pattern to match window title")
 	placeCmd.Flags().StringVar(&placeGeomFlag, "geom", "", "geometry as x,y,w,h (values can be pixels or percentages like 50%)")
 	placeCmd.Flags().StringVar(&placeAnchorFlag, "anchor", "top-left", "anchor point for positioning")
 	placeCmd.Flags().StringVar(&placeMonitorFlag, "monitor", "", "target monitor (index like 0, 1 or name like DP-1)")
 	placeCmd.Flags().StringVar(&placeDesktopFlag, "desktop", "", "target virtual desktop (1-based index or name)")
 	placeCmd.Flags().StringVar(&placeTimeoutFlag, "timeout", "8s", "timeout duration (e.g., 8s, 500ms)")
 	placeCmd.Flags().StringVar(&placeCommandFlag, "cmd", "", "command to run (quoted string)")
-	must(placeCmd.MarkFlagRequired("app"))
+	placeCmd.Flags().BoolVar(&placeKeepFlag, "keep", false, "keep script active and re-enforce geometry")
 	must(placeCmd.MarkFlagRequired("geom"))
 	must(placeCmd.MarkFlagRequired("cmd"))
 
@@ -369,15 +397,24 @@ func init() {
 	captureCmd.Flags().BoolVar(&captureCurrentDesktop, "current-desktop", false, "only capture windows on current desktop")
 	captureCmd.Flags().StringVar(&captureMonitorFilter, "monitor", "", "only capture windows on specified monitor")
 
+	cleanupCmd.Flags().BoolVar(&cleanupDryRunFlag, "dry-run", false, "list without unloading")
+
 	rootCmd.AddCommand(placeCmd)
 	rootCmd.AddCommand(launchCmd)
 	rootCmd.AddCommand(captureCmd)
 	rootCmd.AddCommand(validateCmd)
+	rootCmd.AddCommand(cleanupCmd)
 }
 
 func must(err error) {
 	if err != nil {
 		panic(err)
+	}
+}
+
+func verbose(format string, args ...any) {
+	if verboseFlag {
+		fmt.Fprintf(os.Stderr, "[verbose] "+format+"\n", args...)
 	}
 }
 
@@ -442,10 +479,7 @@ func runPlace(cmd *cobra.Command, args []string) error {
 
 	defer os.RemoveAll(cfg.TempDir)
 
-	if err := writeJSFile(cfg); err != nil {
-		return fmt.Errorf("failed to write JS file: %w", err)
-	}
-
+	verbose("connecting to session D-Bus")
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		return &ExitError{
@@ -455,6 +489,37 @@ func runPlace(cmd *cobra.Command, args []string) error {
 	}
 	defer conn.Close()
 
+	recv := &placeReceiver{ch: make(chan placeResult, 1)}
+	callbackService := fmt.Sprintf("io.github.kwinlayout.Place.p%d.r%s", os.Getpid(), generateRandomSuffix())
+
+	verbose("registering D-Bus service %s", callbackService)
+	reply, err := conn.RequestName(callbackService, dbus.NameFlagDoNotQueue)
+	if err != nil {
+		return &ExitError{
+			Code: exitCodeDBusFailure,
+			Err:  fmt.Errorf("cannot acquire place D-Bus name %q: %w", callbackService, err),
+		}
+	}
+	if reply != dbus.RequestNameReplyPrimaryOwner {
+		return &ExitError{
+			Code: exitCodeDBusFailure,
+			Err:  fmt.Errorf("cannot acquire place D-Bus name %q: already owned", callbackService),
+		}
+	}
+
+	if err := conn.Export(recv, dbus.ObjectPath(placeObjectPath), placeIface); err != nil {
+		return &ExitError{
+			Code: exitCodeDBusFailure,
+			Err:  fmt.Errorf("cannot export place D-Bus object: %w", err),
+		}
+	}
+
+	verbose("writing script to %s", cfg.JSFile)
+	if err := writeJSFile(cfg, callbackService, placeKeepFlag); err != nil {
+		return fmt.Errorf("failed to write JS file: %w", err)
+	}
+
+	verbose("loading script %s", cfg.ScriptName)
 	scriptPath, err := loadScript(conn, cfg.JSFile, cfg.ScriptName)
 	if err != nil {
 		var warning *ScriptPathWarning
@@ -467,8 +532,10 @@ func runPlace(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+	verbose("script loaded at path %s", scriptPath)
 	defer unloadScript(conn, cfg.ScriptName)
 
+	verbose("running script")
 	if err := runScript(conn, cfg.ScriptName, scriptPath); err != nil {
 		return &ExitError{
 			Code: exitCodeLoadFailed,
@@ -476,6 +543,7 @@ func runPlace(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	verbose("launching command: %v", cfg.Cmd)
 	cmdProc, err := launchCommand(cfg.Cmd)
 	if err != nil {
 		return &ExitError{
@@ -484,7 +552,13 @@ func runPlace(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	return waitAndCleanup(cfg.Timeout, []*exec.Cmd{cmdProc})
+	if placeKeepFlag {
+		verbose("keep mode: waiting indefinitely for SIGINT/SIGTERM")
+		return waitForSignal([]*exec.Cmd{cmdProc})
+	}
+
+	verbose("waiting for placement callback (timeout: %s)", cfg.Timeout)
+	return waitForPlacement(cfg.Timeout, recv.ch, []*exec.Cmd{cmdProc})
 }
 
 func parseAndValidatePlace(cmd *cobra.Command, args []string) (Config, error) {
@@ -499,6 +573,23 @@ func parseAndValidatePlace(cmd *cobra.Command, args []string) (Config, error) {
 	}
 	if len(cmdSlice) == 0 {
 		return Config{}, &CommandError{Reason: "command is empty after parsing --cmd"}
+	}
+
+	if placeAppFlag == "" && placeMatchFlag == "" {
+		return Config{}, &ValidationError{
+			Field:   "app/match",
+			Message: "at least one of --app or --match is required",
+		}
+	}
+
+	if placeMatchFlag != "" {
+		if _, err := regexp.Compile(placeMatchFlag); err != nil {
+			return Config{}, &ValidationError{
+				Field:   "match",
+				Value:   placeMatchFlag,
+				Message: "invalid regex: " + err.Error(),
+			}
+		}
 	}
 
 	if !isValidAnchor(placeAnchorFlag) {
@@ -530,6 +621,7 @@ func parseAndValidatePlace(cmd *cobra.Command, args []string) (Config, error) {
 
 	return Config{
 		App:        placeAppFlag,
+		Match:      placeMatchFlag,
 		Geom:       geom,
 		Anchor:     placeAnchorFlag,
 		Monitor:    placeMonitorFlag,
@@ -609,6 +701,7 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 			Maximized:  preset.Maximized,
 			FullScreen: preset.FullScreen,
 			Geom:       geom,
+			Verbose:    verboseFlag,
 		}
 		js := generateJS(jsCfg)
 		if err := os.WriteFile(jsFile, []byte(js), 0600); err != nil {
@@ -656,6 +749,25 @@ type captureReceiver struct {
 func (r *captureReceiver) Send(payload string) (bool, *dbus.Error) {
 	select {
 	case r.ch <- payload:
+	default:
+	}
+	return true, nil
+}
+
+type placeReceiver struct {
+	ch chan placeResult
+}
+
+type placeResult struct {
+	Success  bool
+	WindowID string
+	Caption  string
+	Geometry string
+}
+
+func (r *placeReceiver) Placed(success bool, windowID, caption, geom string) (bool, *dbus.Error) {
+	select {
+	case r.ch <- placeResult{success, windowID, caption, geom}:
 	default:
 	}
 	return true, nil
@@ -831,6 +943,94 @@ func formatValidationFailure(path string, err error) error {
 	fmt.Printf("✗ %s validation failed:\n", filepath.Base(path))
 	fmt.Printf("  %v\n", err)
 	return &ExitError{Code: exitCodeUsage, Err: err}
+}
+
+func runCleanup(cmd *cobra.Command, args []string) error {
+	verbose("connecting to session D-Bus")
+	conn, err := dbus.ConnectSessionBus()
+	if err != nil {
+		return &ExitError{
+			Code: exitCodeDBusFailure,
+			Err:  fmt.Errorf("cannot connect to session D-Bus: %w", err),
+		}
+	}
+	defer conn.Close()
+
+	scripts, err := discoverKwinLayoutScripts(conn)
+	if err != nil {
+		verbose("introspection failed: %v", err)
+	}
+
+	if len(scripts) == 0 {
+		fmt.Println("no orphaned kwin-layout scripts found")
+		return nil
+	}
+
+	count := 0
+	for _, scriptName := range scripts {
+		if cleanupDryRunFlag {
+			fmt.Printf("would unload: %s\n", scriptName)
+		} else {
+			verbose("unloading script %s", scriptName)
+			obj := conn.Object(dbusDestination, dbus.ObjectPath(dbusScriptingPath))
+			call := obj.Call(dbusScriptingIface+".unloadScript", 0, scriptName)
+			if call.Err != nil {
+				verbose("unload failed for %s: %v", scriptName, call.Err)
+				continue
+			}
+			fmt.Printf("unloaded: %s\n", scriptName)
+		}
+		count++
+	}
+
+	fmt.Printf("total: %d script(s)\n", count)
+	return nil
+}
+
+func discoverKwinLayoutScripts(conn *dbus.Conn) ([]string, error) {
+	obj := conn.Object(dbusDestination, dbus.ObjectPath(dbusScriptingPath))
+	var xmlData string
+	err := obj.Call("org.freedesktop.DBus.Introspectable.Introspect", 0).Store(&xmlData)
+	if err != nil {
+		return nil, fmt.Errorf("introspection failed: %w", err)
+	}
+
+	verbose("introspection result: %d bytes", len(xmlData))
+
+	var scripts []string
+	scriptPathRe := regexp.MustCompile(`<node name="(Script\d+)"`)
+	matches := scriptPathRe.FindAllStringSubmatch(xmlData, -1)
+
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		nodeName := match[1]
+		scriptPath := fmt.Sprintf("%s/%s", dbusScriptingPath, nodeName)
+
+		verbose("checking script at %s", scriptPath)
+		scriptObj := conn.Object(dbusDestination, dbus.ObjectPath(scriptPath))
+
+		var pluginName dbus.Variant
+		err := scriptObj.Call("org.freedesktop.DBus.Properties.Get", 0, dbusScriptIface, "pluginName").Store(&pluginName)
+		if err != nil {
+			verbose("could not get pluginName for %s: %v", scriptPath, err)
+			continue
+		}
+
+		name, ok := pluginName.Value().(string)
+		if !ok {
+			verbose("pluginName not a string for %s", scriptPath)
+			continue
+		}
+
+		verbose("found script: %s", name)
+		if strings.HasPrefix(name, "kwin-layout-") {
+			scripts = append(scripts, name)
+		}
+	}
+
+	return scripts, nil
 }
 
 func marshalTemplateYAML(template Template) ([]byte, error) {
@@ -1221,14 +1421,18 @@ func parsePresetGeometry(pg PresetGeometry) (ParsedGeometry, error) {
 	return ParsedGeometry{X: x, Y: y, W: w, H: h}, nil
 }
 
-func writeJSFile(cfg Config) error {
+func writeJSFile(cfg Config, callbackService string, keepMode bool) error {
 	jsCfg := jsPlacementConfig{
-		ScriptName: cfg.ScriptName,
-		App:        cfg.App,
-		Anchor:     cfg.Anchor,
-		Monitor:    cfg.Monitor,
-		Desktop:    cfg.Desktop,
-		Geom:       cfg.Geom,
+		ScriptName:      cfg.ScriptName,
+		App:             cfg.App,
+		Match:           cfg.Match,
+		Anchor:          cfg.Anchor,
+		Monitor:         cfg.Monitor,
+		Desktop:         cfg.Desktop,
+		Geom:            cfg.Geom,
+		Verbose:         verboseFlag,
+		CallbackService: callbackService,
+		KeepMode:        keepMode,
 	}
 	js := generateJS(jsCfg)
 	return os.WriteFile(cfg.JSFile, []byte(js), 0600)
@@ -1279,15 +1483,18 @@ func splitCommand(input string) ([]string, error) {
 }
 
 type jsPlacementConfig struct {
-	ScriptName string
-	App        string
-	Match      string
-	Anchor     string
-	Monitor    string
-	Desktop    string
-	Maximized  string
-	FullScreen bool
-	Geom       ParsedGeometry
+	ScriptName      string
+	App             string
+	Match           string
+	Anchor          string
+	Monitor         string
+	Desktop         string
+	Maximized       string
+	FullScreen      bool
+	Geom            ParsedGeometry
+	Verbose         bool
+	CallbackService string
+	KeepMode        bool
 }
 
 func generateJS(cfg jsPlacementConfig) string {
@@ -1298,6 +1505,7 @@ func generateJS(cfg jsPlacementConfig) string {
 	monitorJSON, _ := json.Marshal(cfg.Monitor)
 	desktopJSON, _ := json.Marshal(cfg.Desktop)
 	maximizedJSON, _ := json.Marshal(cfg.Maximized)
+	callbackServiceJSON, _ := json.Marshal(cfg.CallbackService)
 
 	return fmt.Sprintf(`// Auto-generated: %s
 var SCRIPT_NAME = %s;
@@ -1312,34 +1520,48 @@ var GEOM_X = {value: %d, percent: %v};
 var GEOM_Y = {value: %d, percent: %v};
 var GEOM_W = {value: %d, percent: %v};
 var GEOM_H = {value: %d, percent: %v};
+var VERBOSE = %v;
+var CALLBACK_SERVICE = %s;
+var CALLBACK_PATH = "/io/github/kwinlayout/Place";
+var CALLBACK_IFACE = "io.github.kwinlayout.Place";
+var KEEP_MODE = %v;
+
+function vlog() {
+  if (!VERBOSE) return;
+  var msg = "[kwin-layout] ";
+  for (var i = 0; i < arguments.length; i++) msg += arguments[i] + " ";
+  print(msg);
+}
 
 function idOf(w) { return "" + w.internalId; }
 
 function appMatches(w) {
   if (TARGET_APP === "" && TARGET_MATCH === "") return false;
+  var app = w.desktopFileName ? ("" + w.desktopFileName) : "";
   if (TARGET_APP !== "") {
-    var app = w.desktopFileName ? ("" + w.desktopFileName) : "";
-    if (app === TARGET_APP) return true;
-    if (app === (TARGET_APP + ".desktop")) return true;
-    if (app.endsWith("/" + TARGET_APP + ".desktop")) return true;
-    if (app.endsWith("/" + TARGET_APP)) return true;
+    if (app === TARGET_APP) { vlog("appMatches: exact match", app); return true; }
+    if (app === (TARGET_APP + ".desktop")) { vlog("appMatches: .desktop match", app); return true; }
+    if (app.endsWith("/" + TARGET_APP + ".desktop")) { vlog("appMatches: path/.desktop match", app); return true; }
+    if (app.endsWith("/" + TARGET_APP)) { vlog("appMatches: path match", app); return true; }
   }
   if (TARGET_MATCH !== "") {
     try {
       var re = new RegExp(TARGET_MATCH);
-      if (re.test(w.caption || "")) return true;
-    } catch (e) {}
+      var caption = w.caption || "";
+      if (re.test(caption)) { vlog("appMatches: regex match caption=", caption); return true; }
+    } catch (e) { vlog("appMatches: regex error", e); }
   }
+  vlog("appMatches: no match app=", app, "caption=", w.caption || "");
   return false;
 }
 
 function isManageable(w) {
-  if (!w) return false;
-  if (w.deleted) return false;
-  if (w.specialWindow) return false;
-  if (w.popupWindow) return false;
-  if (w.dock) return false;
-  if (w.desktopWindow) return false;
+  if (!w) { vlog("isManageable: null window"); return false; }
+  if (w.deleted) { vlog("isManageable: deleted"); return false; }
+  if (w.specialWindow) { vlog("isManageable: specialWindow"); return false; }
+  if (w.popupWindow) { vlog("isManageable: popupWindow"); return false; }
+  if (w.dock) { vlog("isManageable: dock"); return false; }
+  if (w.desktopWindow) { vlog("isManageable: desktopWindow"); return false; }
   return true;
 }
 
@@ -1413,17 +1635,37 @@ function resolveGeom(mon) {
   return {x: x, y: y, width: w, height: h};
 }
 
+function notifySuccess(w) {
+  if (!CALLBACK_SERVICE) return;
+  try {
+    var g = w.frameGeometry;
+    callDBus(CALLBACK_SERVICE, CALLBACK_PATH, CALLBACK_IFACE, "Placed",
+             true, "" + w.internalId, "" + w.caption,
+             g.x + "," + g.y + "," + g.width + "," + g.height);
+    vlog("notifySuccess: sent callback");
+  } catch (e) { vlog("notifySuccess: error", e); }
+}
+
 var baseline = {};
 for (var i = 0; i < workspace.stackingOrder.length; i++) {
   var w0 = workspace.stackingOrder[i];
-  if (isManageable(w0) && appMatches(w0)) baseline[idOf(w0)] = true;
+  if (isManageable(w0) && appMatches(w0)) {
+    baseline[idOf(w0)] = true;
+    vlog("baseline: excluding pre-existing window id=", idOf(w0), "caption=", w0.caption);
+  }
 }
 
 var handled = false;
 var targetMon = findMonitor(MONITOR);
 var target = resolveGeom(targetMon);
+vlog("target geometry:", target.x, target.y, target.width, target.height);
 
 function finish() {
+  if (KEEP_MODE) {
+    vlog("finish: keep mode active, not unloading");
+    return;
+  }
+  vlog("finish: unloading script");
   try { workspace.windowAdded.disconnect(onAdded); } catch (e) {}
   try {
     if (typeof callDBus === "function") {
@@ -1433,18 +1675,18 @@ function finish() {
 }
 
 function applyAndStick(w) {
-  if (handled) return;
+  if (handled && !KEEP_MODE) return;
   handled = true;
 
-  print("[kwin-layout] candidate:",
-        "caption=", ("" + w.caption),
-        "app=", ("" + w.desktopFileName),
-        "id=", idOf(w));
+  vlog("applyAndStick: window caption=", w.caption, "app=", w.desktopFileName, "id=", idOf(w));
 
   if (FULLSCREEN) {
     w.fullScreen = true;
+    vlog("applyAndStick: set fullscreen");
+    notifySuccess(w);
   } else {
     w.frameGeometry = target;
+    vlog("applyAndStick: set geometry to", target.x, target.y, target.width, target.height);
     if (MAXIMIZED === "both") {
       try { w.setMaximize(true, true); } catch (e) {}
     } else if (MAXIMIZED === "horizontal") {
@@ -1464,13 +1706,17 @@ function applyAndStick(w) {
   }
 
   var triesLeft = 6;
+  var notified = false;
 
   function ensure() {
-    if (triesLeft <= 0) {
-      finish();
-      return;
+    if (!KEEP_MODE) {
+      if (triesLeft <= 0) {
+        vlog("ensure: tries exhausted, finishing");
+        finish();
+        return;
+      }
+      triesLeft--;
     }
-    triesLeft--;
 
     if (FULLSCREEN) return;
 
@@ -1481,7 +1727,20 @@ function applyAndStick(w) {
       (Math.round(g.width) === target.width) &&
       (Math.round(g.height) === target.height);
 
-    if (!ok) w.frameGeometry = target;
+    vlog("ensure: current=", g.x, g.y, g.width, g.height, "target=", target.x, target.y, target.width, target.height, "ok=", ok, "triesLeft=", triesLeft);
+
+    if (ok) {
+      if (!notified) {
+        notified = true;
+        notifySuccess(w);
+      }
+      if (!KEEP_MODE) {
+        finish();
+      }
+      return;
+    }
+
+    w.frameGeometry = target;
   }
 
   try { w.frameGeometryChanged.connect(ensure); } catch (e) {}
@@ -1496,12 +1755,16 @@ function isNewMatch(w) {
   if (!appMatches(w)) return false;
 
   var id = idOf(w);
-  if (baseline[id]) return false;
+  if (baseline[id]) {
+    vlog("isNewMatch: window in baseline, skipping id=", id);
+    return false;
+  }
   return true;
 }
 
 function onAdded(w) {
-  if (!handled && isNewMatch(w)) applyAndStick(w);
+  vlog("onAdded: window added caption=", w.caption || "", "id=", idOf(w));
+  if ((!handled || KEEP_MODE) && isNewMatch(w)) applyAndStick(w);
 }
 
 workspace.windowAdded.connect(onAdded);
@@ -1509,6 +1772,7 @@ workspace.windowAdded.connect(onAdded);
 for (var i = 0; i < workspace.stackingOrder.length; i++) {
   var w1 = workspace.stackingOrder[i];
   if (!handled && isNewMatch(w1)) {
+    vlog("initial scan: found matching window");
     applyAndStick(w1);
     break;
   }
@@ -1519,7 +1783,8 @@ for (var i = 0; i < workspace.stackingOrder.length; i++) {
 		cfg.Geom.X.Value, cfg.Geom.X.Percent,
 		cfg.Geom.Y.Value, cfg.Geom.Y.Percent,
 		cfg.Geom.W.Value, cfg.Geom.W.Percent,
-		cfg.Geom.H.Value, cfg.Geom.H.Percent)
+		cfg.Geom.H.Value, cfg.Geom.H.Percent,
+		cfg.Verbose, string(callbackServiceJSON), cfg.KeepMode)
 }
 
 func generateCaptureJS(scriptName, serviceName string, opts captureOptions) string {
@@ -1770,7 +2035,12 @@ func unloadScript(conn *dbus.Conn, scriptName string) {
 }
 
 func launchCommand(cmdSlice []string) (*exec.Cmd, error) {
-	cmd := exec.Command(cmdSlice[0], cmdSlice[1:]...)
+	expanded := make([]string, len(cmdSlice))
+	for i, arg := range cmdSlice {
+		expanded[i] = expandEnvVars(arg)
+	}
+	verbose("expanded command: %v", expanded)
+	cmd := exec.Command(expanded[0], expanded[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -1781,6 +2051,21 @@ func launchCommand(cmdSlice []string) (*exec.Cmd, error) {
 		return nil, err
 	}
 	return cmd, nil
+}
+
+var envVarBraceRE = regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
+var envVarPlainRE = regexp.MustCompile(`\$([a-zA-Z_][a-zA-Z0-9_]*)`)
+
+func expandEnvVars(s string) string {
+	s = envVarBraceRE.ReplaceAllStringFunc(s, func(match string) string {
+		varName := match[2 : len(match)-1]
+		return os.Getenv(varName)
+	})
+	s = envVarPlainRE.ReplaceAllStringFunc(s, func(match string) string {
+		varName := match[1:]
+		return os.Getenv(varName)
+	})
+	return s
 }
 
 func waitAndCleanup(timeout time.Duration, cmds []*exec.Cmd) error {
@@ -1817,5 +2102,52 @@ func signalProcessGroups(cmds []*exec.Cmd, sig os.Signal) {
 			continue
 		}
 		_ = syscall.Kill(-cmd.Process.Pid, ss)
+	}
+}
+
+func waitForPlacement(timeout time.Duration, resultCh <-chan placeResult, cmds []*exec.Cmd) error {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case result := <-resultCh:
+		verbose("placement callback received: success=%v windowID=%s caption=%s geometry=%s",
+			result.Success, result.WindowID, result.Caption, result.Geometry)
+		return nil
+	case <-timer.C:
+		verbose("timeout reached, placement may have failed")
+		return nil
+	case sig := <-sigCh:
+		signalProcessGroups(cmds, sig)
+		switch sig {
+		case syscall.SIGINT:
+			return &ExitError{Code: exitCodeInterrupted, Err: fmt.Errorf("interrupted by SIGINT")}
+		case syscall.SIGTERM:
+			return &ExitError{Code: exitCodeTerminated, Err: fmt.Errorf("interrupted by SIGTERM")}
+		default:
+			return &ExitError{Code: exitCodeTerminated, Err: fmt.Errorf("interrupted by signal %v", sig)}
+		}
+	}
+}
+
+func waitForSignal(cmds []*exec.Cmd) error {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	sig := <-sigCh
+	verbose("received signal %v, cleaning up", sig)
+	signalProcessGroups(cmds, sig)
+	switch sig {
+	case syscall.SIGINT:
+		return &ExitError{Code: exitCodeInterrupted, Err: fmt.Errorf("interrupted by SIGINT")}
+	case syscall.SIGTERM:
+		return &ExitError{Code: exitCodeTerminated, Err: fmt.Errorf("interrupted by SIGTERM")}
+	default:
+		return &ExitError{Code: exitCodeTerminated, Err: fmt.Errorf("interrupted by signal %v", sig)}
 	}
 }
