@@ -96,6 +96,7 @@ type Preset struct {
 	Desktop    string         `json:"desktop,omitempty" yaml:"desktop,omitempty"`
 	Maximized  string         `json:"maximized,omitempty" yaml:"maximized,omitempty"`
 	FullScreen bool           `json:"fullscreen,omitempty" yaml:"fullscreen,omitempty"`
+	Centered   bool           `json:"centered,omitempty" yaml:"centered,omitempty"`
 }
 
 type Template struct {
@@ -263,6 +264,7 @@ var (
 	placeTimeoutFlag  string
 	placeCommandFlag  string
 	placeKeepFlag     bool
+	placeCenteredFlag bool
 	launchTimeoutFlag string
 
 	captureTimeoutFlag      string
@@ -386,6 +388,7 @@ func init() {
 	placeCmd.Flags().StringVar(&placeTimeoutFlag, "timeout", "8s", "timeout duration (e.g., 8s, 500ms)")
 	placeCmd.Flags().StringVar(&placeCommandFlag, "cmd", "", "command to run (quoted string)")
 	placeCmd.Flags().BoolVar(&placeKeepFlag, "keep", false, "keep script active and re-enforce geometry")
+	placeCmd.Flags().BoolVar(&placeCenteredFlag, "centered", false, "center window on monitor (sets x=50%, y=50%, anchor=center)")
 	must(placeCmd.MarkFlagRequired("geom"))
 	must(placeCmd.MarkFlagRequired("cmd"))
 
@@ -605,6 +608,13 @@ func parseAndValidatePlace(cmd *cobra.Command, args []string) (Config, error) {
 		return Config{}, err
 	}
 
+	anchor := placeAnchorFlag
+	if placeCenteredFlag {
+		anchor = "center"
+		geom.X = GeomValue{Value: 50, Percent: true}
+		geom.Y = GeomValue{Value: 50, Percent: true}
+	}
+
 	timeout, err := parseTimeout(placeTimeoutFlag)
 	if err != nil {
 		return Config{}, err
@@ -623,7 +633,7 @@ func parseAndValidatePlace(cmd *cobra.Command, args []string) (Config, error) {
 		App:        placeAppFlag,
 		Match:      placeMatchFlag,
 		Geom:       geom,
-		Anchor:     placeAnchorFlag,
+		Anchor:     anchor,
 		Monitor:    placeMonitorFlag,
 		Desktop:    placeDesktopFlag,
 		Timeout:    timeout,
@@ -683,9 +693,15 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 			anchor = "top-left"
 		}
 
-		geom, err := parsePresetGeometry(preset.Geometry)
+		geom, err := parsePresetGeometry(preset.Geometry, preset.Centered)
 		if err != nil {
 			return &PresetError{Preset: label, Field: "geometry", Err: err}
+		}
+
+		if preset.Centered {
+			anchor = "center"
+			geom.X = GeomValue{Value: 50, Percent: true}
+			geom.Y = GeomValue{Value: 50, Percent: true}
 		}
 
 		scriptName := fmt.Sprintf("kwin-layout-%d-%d-%s", os.Getpid(), i, generateRandomSuffix())
@@ -1206,7 +1222,7 @@ func validateTemplate(t Template) error {
 			}
 		}
 
-		geom, err := parsePresetGeometry(p.Geometry)
+		geom, err := parsePresetGeometry(p.Geometry, p.Centered)
 		if err != nil {
 			return &PresetError{Preset: label, Field: "geometry", Err: err}
 		}
@@ -1319,8 +1335,17 @@ func generateRandomSuffix() string {
 	return fmt.Sprintf("%x%x", uint64(now), uint32(pid))
 }
 
-func parseGeomValue(s, component string) (GeomValue, error) {
+func parseGeomValue(s, component string, allowEmpty bool) (GeomValue, error) {
 	s = strings.TrimSpace(s)
+	if s == "" {
+		if allowEmpty {
+			return GeomValue{Value: 0, Percent: false}, nil
+		}
+		return GeomValue{}, &GeometryError{
+			Component: component,
+			Reason:    "required",
+		}
+	}
 	if strings.HasSuffix(s, "%") {
 		pct, err := strconv.Atoi(strings.TrimSuffix(s, "%"))
 		if err != nil {
@@ -1360,22 +1385,22 @@ func parseGeom(s string) (ParsedGeometry, error) {
 		}
 	}
 
-	x, err := parseGeomValue(parts[0], "x")
+	x, err := parseGeomValue(parts[0], "x", false)
 	if err != nil {
 		return ParsedGeometry{}, err
 	}
 
-	y, err := parseGeomValue(parts[1], "y")
+	y, err := parseGeomValue(parts[1], "y", false)
 	if err != nil {
 		return ParsedGeometry{}, err
 	}
 
-	w, err := parseGeomValue(parts[2], "width")
+	w, err := parseGeomValue(parts[2], "width", false)
 	if err != nil {
 		return ParsedGeometry{}, err
 	}
 
-	h, err := parseGeomValue(parts[3], "height")
+	h, err := parseGeomValue(parts[3], "height", false)
 	if err != nil {
 		return ParsedGeometry{}, err
 	}
@@ -1390,23 +1415,23 @@ func parseGeom(s string) (ParsedGeometry, error) {
 	return ParsedGeometry{X: x, Y: y, W: w, H: h}, nil
 }
 
-func parsePresetGeometry(pg PresetGeometry) (ParsedGeometry, error) {
-	x, err := parseGeomValue(pg.X, "x")
+func parsePresetGeometry(pg PresetGeometry, centered bool) (ParsedGeometry, error) {
+	x, err := parseGeomValue(pg.X, "x", centered)
 	if err != nil {
 		return ParsedGeometry{}, err
 	}
 
-	y, err := parseGeomValue(pg.Y, "y")
+	y, err := parseGeomValue(pg.Y, "y", centered)
 	if err != nil {
 		return ParsedGeometry{}, err
 	}
 
-	w, err := parseGeomValue(pg.Width, "width")
+	w, err := parseGeomValue(pg.Width, "width", false)
 	if err != nil {
 		return ParsedGeometry{}, err
 	}
 
-	h, err := parseGeomValue(pg.Height, "height")
+	h, err := parseGeomValue(pg.Height, "height", false)
 	if err != nil {
 		return ParsedGeometry{}, err
 	}

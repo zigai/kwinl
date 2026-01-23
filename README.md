@@ -49,10 +49,12 @@ Examples:
   kwin-layout place --app org.kde.konsole --geom 0,0,50%,100% --anchor top-left --cmd "konsole"
   kwin-layout place --match "^Firefox.*Private" --geom 0,0,50%,100% --cmd "firefox --private-window"
   kwin-layout place --app firefox --match "YouTube" --geom 0,0,50%,100% --cmd firefox
+  kwin-layout place --app org.kde.konsole --geom 0,0,800,600 --centered --cmd konsole
 
 Flags:
       --anchor string    anchor point for positioning (default "top-left")
       --app string       application ID to match
+      --centered         center window on monitor (sets x=50%, y=50%, anchor=center)
       --cmd string       command to run (quoted string)
       --desktop string   target virtual desktop (1-based index or name)
       --geom string      geometry as x,y,w,h (values can be pixels or percentages like 50%)
@@ -200,6 +202,7 @@ presets:
 | `desktop` | no | Target virtual desktop (1-based index or name) |
 | `maximized` | no | Maximize state: `horizontal`, `vertical`, or `both` |
 | `fullscreen` | no | Set to `true` to make window fullscreen |
+| `centered` | no | Set to `true` to center window (overrides x, y, anchor) |
 
 #### Command specification
 
