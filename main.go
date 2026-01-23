@@ -335,6 +335,18 @@ This is a best-effort launcher and may not reproduce multi-window apps exactly.`
 	RunE:          runCapture,
 }
 
+var validateCmd = &cobra.Command{
+	Use:   "validate <layout-file>",
+	Short: "Validate a layout template without launching",
+	Long:  `Validates a YAML/JSON layout file for syntax errors, missing fields, and invalid values without launching any windows.`,
+	Example: `  kwin-layout validate layout.yaml
+  kwin-layout validate workspace.json`,
+	Args:          cobra.ExactArgs(1),
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runValidate,
+}
+
 func init() {
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
 
@@ -360,6 +372,7 @@ func init() {
 	rootCmd.AddCommand(placeCmd)
 	rootCmd.AddCommand(launchCmd)
 	rootCmd.AddCommand(captureCmd)
+	rootCmd.AddCommand(validateCmd)
 }
 
 func must(err error) {
@@ -790,6 +803,34 @@ func runCapture(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func runValidate(cmd *cobra.Command, args []string) error {
+	templatePath := args[0]
+
+	template, err := parseTemplate(templatePath)
+	if err != nil {
+		return formatValidationFailure(templatePath, err)
+	}
+
+	if template.Timeout != "" {
+		if _, err := parseTimeout(template.Timeout); err != nil {
+			return formatValidationFailure(templatePath, err)
+		}
+	}
+
+	if err := validateTemplate(template); err != nil {
+		return formatValidationFailure(templatePath, err)
+	}
+
+	fmt.Printf("✓ %s is valid (%d presets)\n", filepath.Base(templatePath), len(template.Presets))
+	return nil
+}
+
+func formatValidationFailure(path string, err error) error {
+	fmt.Printf("✗ %s validation failed:\n", filepath.Base(path))
+	fmt.Printf("  %v\n", err)
+	return &ExitError{Code: exitCodeUsage, Err: err}
 }
 
 func marshalTemplateYAML(template Template) ([]byte, error) {

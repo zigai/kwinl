@@ -7,6 +7,7 @@ Declarative window placement for KWin: launch programs into predefined geometrie
 - Place: launch a single app and move/resize its newly created window to a specific geometry
 - Launch: apply a YAML/JSON layout to start and arrange multiple apps at once
 - Capture: snapshot current windows into a reusable YAML/JSON layout template
+- Validate: check a layout file for errors without launching anything
 
 ## Requirements
 
@@ -107,6 +108,23 @@ Flags:
       --infer-command      infer a best-effort launcher command using gtk-launch (default true)
       --monitor string     only capture windows on specified monitor
       --timeout string     capture timeout (e.g., 2s, 500ms) (default "2s")
+```
+
+#### kwin-layout validate
+
+```
+Validates a YAML/JSON layout file for syntax errors, missing fields,
+and invalid values without launching any windows.
+
+Usage:
+  kwin-layout validate <layout-file> [flags]
+
+Examples:
+  kwin-layout validate layout.yaml
+  kwin-layout validate workspace.json
+
+Flags:
+  -h, --help   help for validate
 ```
 
 ### Template format (YAML/JSON)
