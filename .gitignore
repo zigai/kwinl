@@ -31,4 +31,5 @@ go.work.sum
 # .idea/
 # .vscode/
 kwin-layout
+kwin-place
 example.yaml
