@@ -53,17 +53,17 @@ Examples:
 
 Flags:
       --anchor string    anchor point for positioning (default "top-left")
-      --app string       application ID to match
+  -a, --app string       application ID to match
       --centered         center window on monitor (sets x=50%, y=50%, anchor=center)
-      --cmd string       command to run (quoted string)
+  -c, --cmd string       command to run (quoted string)
       --desktop string   target virtual desktop (1-based index or name)
-      --geom string      geometry as x,y,w,h (values can be pixels or percentages like 50%)
+  -g, --geom string      geometry as x,y,w,h (values can be pixels or percentages like 50%)
   -h, --help             help for place
       --keep             keep script active and re-enforce geometry
-      --match string     regex pattern to match window title
+  -m, --match string     regex pattern to match window title
       --monitor string   target monitor (index like 0, 1 or name like DP-1)
       --pinned           show window on all virtual desktops
-      --timeout string   timeout duration (e.g., 8s, 500ms) (default "8s")
+  -t, --timeout string   timeout duration (e.g., 8s, 500ms) (default "8s")
 
 Global Flags:
   -v, --verbose   verbose output
@@ -87,7 +87,7 @@ Examples:
 
 Flags:
   -h, --help             help for launch
-      --timeout string   timeout override (e.g., 10s)
+  -t, --timeout string   timeout override (e.g., 10s)
 
 Global Flags:
   -v, --verbose   verbose output
@@ -118,12 +118,12 @@ Examples:
   kwin-layout capture layout.yaml --monitor DP-1
 
 Flags:
-      --current-desktop    only capture windows on current desktop
+  -d, --current-desktop    only capture windows on current desktop
   -h, --help               help for capture
-      --include-unknown    include windows without desktopFileName (matched by title)
+  -u, --include-unknown    include windows without desktopFileName (matched by title)
       --infer-command      infer a best-effort launcher command using gtk-launch (default true)
-      --monitor string     only capture windows on specified monitor
-      --timeout string     capture timeout (e.g., 2s, 500ms) (default "2s")
+  -M, --monitor string     only capture windows on specified monitor
+  -t, --timeout string     capture timeout (e.g., 2s, 500ms) (default "2s")
 
 Global Flags:
   -v, --verbose   verbose output
@@ -162,7 +162,7 @@ Examples:
   kwin-layout cleanup
 
 Flags:
-      --dry-run   list without unloading
+  -n, --dry-run   list without unloading
   -h, --help      help for cleanup
 
 Global Flags:
