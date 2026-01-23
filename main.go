@@ -70,6 +70,7 @@ type Config struct {
 	Anchor     string
 	Monitor    string
 	Desktop    string
+	Pinned     bool
 	Timeout    time.Duration
 	Cmd        []string
 	ScriptName string
@@ -97,6 +98,7 @@ type Preset struct {
 	Maximized  string         `json:"maximized,omitempty" yaml:"maximized,omitempty"`
 	FullScreen bool           `json:"fullscreen,omitempty" yaml:"fullscreen,omitempty"`
 	Centered   bool           `json:"centered,omitempty" yaml:"centered,omitempty"`
+	Pinned     bool           `json:"pinned,omitempty" yaml:"pinned,omitempty"`
 }
 
 type Template struct {
@@ -265,6 +267,7 @@ var (
 	placeCommandFlag  string
 	placeKeepFlag     bool
 	placeCenteredFlag bool
+	placePinnedFlag   bool
 	launchTimeoutFlag string
 
 	captureTimeoutFlag      string
@@ -389,6 +392,7 @@ func init() {
 	placeCmd.Flags().StringVar(&placeCommandFlag, "cmd", "", "command to run (quoted string)")
 	placeCmd.Flags().BoolVar(&placeKeepFlag, "keep", false, "keep script active and re-enforce geometry")
 	placeCmd.Flags().BoolVar(&placeCenteredFlag, "centered", false, "center window on monitor (sets x=50%, y=50%, anchor=center)")
+	placeCmd.Flags().BoolVar(&placePinnedFlag, "pinned", false, "show window on all virtual desktops")
 	must(placeCmd.MarkFlagRequired("geom"))
 	must(placeCmd.MarkFlagRequired("cmd"))
 
@@ -636,6 +640,7 @@ func parseAndValidatePlace(cmd *cobra.Command, args []string) (Config, error) {
 		Anchor:     anchor,
 		Monitor:    placeMonitorFlag,
 		Desktop:    placeDesktopFlag,
+		Pinned:     placePinnedFlag,
 		Timeout:    timeout,
 		Cmd:        cmdSlice,
 		ScriptName: scriptName,
@@ -714,6 +719,7 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 			Anchor:     anchor,
 			Monitor:    preset.Monitor,
 			Desktop:    preset.Desktop,
+			Pinned:     preset.Pinned,
 			Maximized:  preset.Maximized,
 			FullScreen: preset.FullScreen,
 			Geom:       geom,
@@ -1454,6 +1460,7 @@ func writeJSFile(cfg Config, callbackService string, keepMode bool) error {
 		Anchor:          cfg.Anchor,
 		Monitor:         cfg.Monitor,
 		Desktop:         cfg.Desktop,
+		Pinned:          cfg.Pinned,
 		Geom:            cfg.Geom,
 		Verbose:         verboseFlag,
 		CallbackService: callbackService,
@@ -1514,6 +1521,7 @@ type jsPlacementConfig struct {
 	Anchor          string
 	Monitor         string
 	Desktop         string
+	Pinned          bool
 	Maximized       string
 	FullScreen      bool
 	Geom            ParsedGeometry
@@ -1539,6 +1547,7 @@ var TARGET_MATCH = %s;
 var ANCHOR = %s;
 var MONITOR = %s;
 var DESKTOP = %s;
+var PINNED = %v;
 var MAXIMIZED = %s;
 var FULLSCREEN = %v;
 var GEOM_X = {value: %d, percent: %v};
@@ -1725,9 +1734,13 @@ function applyAndStick(w) {
     try { workspace.sendWindowToOutput(w, targetMon); } catch (e) {}
   }
 
-  var desk = findDesktop(DESKTOP);
-  if (desk) {
-    try { w.desktops = [desk]; } catch (e) {}
+  if (PINNED) {
+    try { w.desktops = workspace.desktops; } catch (e) {}
+  } else {
+    var desk = findDesktop(DESKTOP);
+    if (desk) {
+      try { w.desktops = [desk]; } catch (e) {}
+    }
   }
 
   var triesLeft = 6;
@@ -1803,7 +1816,7 @@ for (var i = 0; i < workspace.stackingOrder.length; i++) {
   }
 }
 `, cfg.ScriptName, string(scriptNameJSON), string(appJSON), string(matchJSON),
-		string(anchorJSON), string(monitorJSON), string(desktopJSON),
+		string(anchorJSON), string(monitorJSON), string(desktopJSON), cfg.Pinned,
 		string(maximizedJSON), cfg.FullScreen,
 		cfg.Geom.X.Value, cfg.Geom.X.Percent,
 		cfg.Geom.Y.Value, cfg.Geom.Y.Percent,

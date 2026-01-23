@@ -62,6 +62,7 @@ Flags:
       --keep             keep script active and re-enforce geometry
       --match string     regex pattern to match window title
       --monitor string   target monitor (index like 0, 1 or name like DP-1)
+      --pinned           show window on all virtual desktops
       --timeout string   timeout duration (e.g., 8s, 500ms) (default "8s")
 
 Global Flags:
@@ -203,6 +204,7 @@ presets:
 | `maximized` | no | Maximize state: `horizontal`, `vertical`, or `both` |
 | `fullscreen` | no | Set to `true` to make window fullscreen |
 | `centered` | no | Set to `true` to center window (overrides x, y, anchor) |
+| `pinned` | no | Set to `true` to show window on all virtual desktops |
 
 #### Command specification
 
