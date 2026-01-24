@@ -60,7 +60,10 @@ Flags:
   -g, --geom string      geometry as x,y,w,h (values can be pixels or percentages like 50%)
   -h, --help             help for place
       --keep             keep script active and re-enforce geometry
+      --keep-above       keep window above others
+      --keep-below       keep window below others
   -m, --match string     regex pattern to match window title
+      --minimized        start window minimized
       --monitor string   target monitor (index like 0, 1 or name like DP-1)
       --pinned           show window on all virtual desktops
   -t, --timeout string   timeout duration (e.g., 8s, 500ms) (default "8s")
@@ -205,6 +208,9 @@ presets:
 | `fullscreen` | no | Set to `true` to make window fullscreen |
 | `centered` | no | Set to `true` to center window (overrides x, y, anchor) |
 | `pinned` | no | Set to `true` to show window on all virtual desktops |
+| `minimized` | no | Set to `true` to start window minimized |
+| `keepAbove` | no | Set to `true` to keep window above others (always on top) |
+| `keepBelow` | no | Set to `true` to keep window below others |
 
 #### Command specification
 
