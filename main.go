@@ -71,6 +71,9 @@ type Config struct {
 	Monitor    string
 	Desktop    string
 	Pinned     bool
+	Minimized  bool
+	KeepAbove  bool
+	KeepBelow  bool
 	Timeout    time.Duration
 	Cmd        []string
 	ScriptName string
@@ -99,6 +102,9 @@ type Preset struct {
 	FullScreen bool           `json:"fullscreen,omitempty" yaml:"fullscreen,omitempty"`
 	Centered   bool           `json:"centered,omitempty" yaml:"centered,omitempty"`
 	Pinned     bool           `json:"pinned,omitempty" yaml:"pinned,omitempty"`
+	Minimized  bool           `json:"minimized,omitempty" yaml:"minimized,omitempty"`
+	KeepAbove  bool           `json:"keepAbove,omitempty" yaml:"keepAbove,omitempty"`
+	KeepBelow  bool           `json:"keepBelow,omitempty" yaml:"keepBelow,omitempty"`
 }
 
 type Template struct {
@@ -265,10 +271,13 @@ var (
 	placeDesktopFlag  string
 	placeTimeoutFlag  string
 	placeCommandFlag  string
-	placeKeepFlag     bool
-	placeCenteredFlag bool
-	placePinnedFlag   bool
-	launchTimeoutFlag string
+	placeKeepFlag      bool
+	placeCenteredFlag  bool
+	placePinnedFlag    bool
+	placeMinimizedFlag bool
+	placeKeepAboveFlag bool
+	placeKeepBelowFlag bool
+	launchTimeoutFlag  string
 
 	captureTimeoutFlag      string
 	captureInferCommandFlag bool
@@ -393,6 +402,9 @@ func init() {
 	placeCmd.Flags().BoolVar(&placeKeepFlag, "keep", false, "keep script active and re-enforce geometry")
 	placeCmd.Flags().BoolVar(&placeCenteredFlag, "centered", false, "center window on monitor (sets x=50%, y=50%, anchor=center)")
 	placeCmd.Flags().BoolVar(&placePinnedFlag, "pinned", false, "show window on all virtual desktops")
+	placeCmd.Flags().BoolVar(&placeMinimizedFlag, "minimized", false, "start window minimized")
+	placeCmd.Flags().BoolVar(&placeKeepAboveFlag, "keep-above", false, "keep window above others")
+	placeCmd.Flags().BoolVar(&placeKeepBelowFlag, "keep-below", false, "keep window below others")
 	must(placeCmd.MarkFlagRequired("geom"))
 	must(placeCmd.MarkFlagRequired("cmd"))
 
@@ -641,6 +653,9 @@ func parseAndValidatePlace(cmd *cobra.Command, args []string) (Config, error) {
 		Monitor:    placeMonitorFlag,
 		Desktop:    placeDesktopFlag,
 		Pinned:     placePinnedFlag,
+		Minimized:  placeMinimizedFlag,
+		KeepAbove:  placeKeepAboveFlag,
+		KeepBelow:  placeKeepBelowFlag,
 		Timeout:    timeout,
 		Cmd:        cmdSlice,
 		ScriptName: scriptName,
@@ -720,6 +735,9 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 			Monitor:    preset.Monitor,
 			Desktop:    preset.Desktop,
 			Pinned:     preset.Pinned,
+			Minimized:  preset.Minimized,
+			KeepAbove:  preset.KeepAbove,
+			KeepBelow:  preset.KeepBelow,
 			Maximized:  preset.Maximized,
 			FullScreen: preset.FullScreen,
 			Geom:       geom,
@@ -1461,6 +1479,9 @@ func writeJSFile(cfg Config, callbackService string, keepMode bool) error {
 		Monitor:         cfg.Monitor,
 		Desktop:         cfg.Desktop,
 		Pinned:          cfg.Pinned,
+		Minimized:       cfg.Minimized,
+		KeepAbove:       cfg.KeepAbove,
+		KeepBelow:       cfg.KeepBelow,
 		Geom:            cfg.Geom,
 		Verbose:         verboseFlag,
 		CallbackService: callbackService,
@@ -1522,6 +1543,9 @@ type jsPlacementConfig struct {
 	Monitor         string
 	Desktop         string
 	Pinned          bool
+	Minimized       bool
+	KeepAbove       bool
+	KeepBelow       bool
 	Maximized       string
 	FullScreen      bool
 	Geom            ParsedGeometry
@@ -1548,6 +1572,9 @@ var ANCHOR = %s;
 var MONITOR = %s;
 var DESKTOP = %s;
 var PINNED = %v;
+var MINIMIZED = %v;
+var KEEP_ABOVE = %v;
+var KEEP_BELOW = %v;
 var MAXIMIZED = %s;
 var FULLSCREEN = %v;
 var GEOM_X = {value: %d, percent: %v};
@@ -1743,6 +1770,16 @@ function applyAndStick(w) {
     }
   }
 
+  if (MINIMIZED) {
+    try { w.minimized = true; } catch (e) {}
+  }
+  if (KEEP_ABOVE) {
+    try { w.keepAbove = true; } catch (e) {}
+  }
+  if (KEEP_BELOW) {
+    try { w.keepBelow = true; } catch (e) {}
+  }
+
   var triesLeft = 6;
   var notified = false;
 
@@ -1817,6 +1854,7 @@ for (var i = 0; i < workspace.stackingOrder.length; i++) {
 }
 `, cfg.ScriptName, string(scriptNameJSON), string(appJSON), string(matchJSON),
 		string(anchorJSON), string(monitorJSON), string(desktopJSON), cfg.Pinned,
+		cfg.Minimized, cfg.KeepAbove, cfg.KeepBelow,
 		string(maximizedJSON), cfg.FullScreen,
 		cfg.Geom.X.Value, cfg.Geom.X.Percent,
 		cfg.Geom.Y.Value, cfg.Geom.Y.Percent,
