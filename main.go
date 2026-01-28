@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -155,6 +156,13 @@ func (c *CommandSpec) UnmarshalYAML(value *yaml.Node) error {
 		}
 		*c = CommandSpec(asSlice)
 		return nil
+	case yaml.DocumentNode:
+		if len(value.Content) != 1 {
+			return fmt.Errorf("invalid command: expected string or string array")
+		}
+		return c.UnmarshalYAML(value.Content[0])
+	case yaml.MappingNode, yaml.AliasNode:
+		return fmt.Errorf("invalid command: expected string or string array")
 	case 0:
 		*c = nil
 		return nil
@@ -250,11 +258,11 @@ func (e *ExitError) Unwrap() error {
 	return e.Err
 }
 
-type ScriptPathWarning struct {
+type ScriptPathError struct {
 	Reason string
 }
 
-func (e *ScriptPathWarning) Error() string {
+func (e *ScriptPathError) Error() string {
 	return fmt.Sprintf("unexpected loadScript return: %s", e.Reason)
 }
 
@@ -263,14 +271,14 @@ var (
 
 	verboseFlag bool
 
-	placeAppFlag      string
-	placeMatchFlag    string
-	placeGeomFlag     string
-	placeAnchorFlag   string
-	placeMonitorFlag  string
-	placeDesktopFlag  string
-	placeTimeoutFlag  string
-	placeCommandFlag  string
+	placeAppFlag       string
+	placeMatchFlag     string
+	placeGeomFlag      string
+	placeAnchorFlag    string
+	placeMonitorFlag   string
+	placeDesktopFlag   string
+	placeTimeoutFlag   string
+	placeCommandFlag   string
 	placeKeepFlag      bool
 	placeCenteredFlag  bool
 	placePinnedFlag    bool
@@ -475,28 +483,24 @@ func isUsageError(err error) bool {
 		return true
 	}
 	var ce *CommandError
-	if errors.As(err, &ce) {
-		return true
-	}
-	return false
+	return errors.As(err, &ce)
 }
 
 func isValidAnchor(anchor string) bool {
-	for _, a := range validAnchors {
-		if a == anchor {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(validAnchors, anchor)
 }
 
 func runPlace(cmd *cobra.Command, args []string) error {
-	cfg, err := parseAndValidatePlace(cmd, args)
+	cfg, err := parseAndValidatePlace()
 	if err != nil {
 		return err
 	}
 
-	defer os.RemoveAll(cfg.TempDir)
+	defer func() {
+		if err := os.RemoveAll(cfg.TempDir); err != nil {
+			log.Printf("warning: failed to remove temp dir %s: %v", cfg.TempDir, err)
+		}
+	}()
 
 	verbose("connecting to session D-Bus")
 	conn, err := dbus.ConnectSessionBus()
@@ -506,7 +510,11 @@ func runPlace(cmd *cobra.Command, args []string) error {
 			Err:  fmt.Errorf("cannot connect to session D-Bus: %w", err),
 		}
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("warning: failed to close D-Bus connection: %v", err)
+		}
+	}()
 
 	recv := &placeReceiver{ch: make(chan placeResult, 1)}
 	callbackService := fmt.Sprintf("io.github.kwinlayout.Place.p%d.r%s", os.Getpid(), generateRandomSuffix())
@@ -541,7 +549,7 @@ func runPlace(cmd *cobra.Command, args []string) error {
 	verbose("loading script %s", cfg.ScriptName)
 	scriptPath, err := loadScript(conn, cfg.JSFile, cfg.ScriptName)
 	if err != nil {
-		var warning *ScriptPathWarning
+		var warning *ScriptPathError
 		if errors.As(err, &warning) {
 			log.Printf("warning: %v", warning)
 		} else {
@@ -580,7 +588,7 @@ func runPlace(cmd *cobra.Command, args []string) error {
 	return waitForPlacement(cfg.Timeout, recv.ch, []*exec.Cmd{cmdProc})
 }
 
-func parseAndValidatePlace(cmd *cobra.Command, args []string) (Config, error) {
+func parseAndValidatePlace() (Config, error) {
 	cmdStr := strings.TrimSpace(placeCommandFlag)
 	if cmdStr == "" {
 		return Config{}, &CommandError{Reason: "missing --cmd command string"}
@@ -750,7 +758,7 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 
 		scriptPath, err := loadScript(conn, jsFile, scriptName)
 		if err != nil {
-			var warning *ScriptPathWarning
+			var warning *ScriptPathError
 			if errors.As(err, &warning) {
 				log.Printf("warning: preset %s: %v", label, warning)
 			} else {
@@ -891,7 +899,7 @@ func runCapture(cmd *cobra.Command, args []string) error {
 
 	scriptPath, err := loadScript(conn, jsFile, scriptName)
 	if err != nil {
-		var warning *ScriptPathWarning
+		var warning *ScriptPathError
 		if errors.As(err, &warning) {
 			log.Printf("warning: %v", warning)
 		} else {
@@ -1292,12 +1300,7 @@ func validateTemplate(t Template) error {
 }
 
 func isValidMaximized(v string) bool {
-	for _, valid := range validMaximizedValues {
-		if v == valid {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(validMaximizedValues, v)
 }
 
 func determineLaunchTimeout(t Template) (time.Duration, error) {
@@ -1370,8 +1373,8 @@ func parseGeomValue(s, component string, allowEmpty bool) (GeomValue, error) {
 			Reason:    "required",
 		}
 	}
-	if strings.HasSuffix(s, "%") {
-		pct, err := strconv.Atoi(strings.TrimSuffix(s, "%"))
+	if before, ok := strings.CutSuffix(s, "%"); ok {
+		pct, err := strconv.Atoi(before)
 		if err != nil {
 			return GeomValue{}, &GeometryError{
 				Component: component,
@@ -2046,7 +2049,7 @@ func loadScript(conn *dbus.Conn, jsPath, scriptName string) (string, error) {
 
 func normalizeScriptPath(body []interface{}) (string, error) {
 	if len(body) == 0 {
-		return "", &ScriptPathWarning{Reason: "empty response"}
+		return "", &ScriptPathError{Reason: "empty response"}
 	}
 
 	val := body[0]
@@ -2057,9 +2060,9 @@ func normalizeScriptPath(body []interface{}) (string, error) {
 			return v, nil
 		}
 		if v == "" {
-			return "", &ScriptPathWarning{Reason: "empty string response"}
+			return "", &ScriptPathError{Reason: "empty string response"}
 		}
-		return "", &ScriptPathWarning{Reason: fmt.Sprintf("unexpected string %q", v)}
+		return "", &ScriptPathError{Reason: fmt.Sprintf("unexpected string %q", v)}
 	case int32:
 		return fmt.Sprintf("%s%d", scriptObjectPrefix, v), nil
 	case int64:
@@ -2072,11 +2075,11 @@ func normalizeScriptPath(body []interface{}) (string, error) {
 		return fmt.Sprintf("%s%d", scriptObjectPrefix, v), nil
 	case dbus.ObjectPath:
 		if string(v) == "" {
-			return "", &ScriptPathWarning{Reason: "empty object path response"}
+			return "", &ScriptPathError{Reason: "empty object path response"}
 		}
 		return string(v), nil
 	default:
-		return "", &ScriptPathWarning{Reason: fmt.Sprintf("unexpected type %T", val)}
+		return "", &ScriptPathError{Reason: fmt.Sprintf("unexpected type %T", val)}
 	}
 }
 

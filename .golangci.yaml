@@ -1,0 +1,122 @@
+version: "2"
+
+run:
+  timeout: 3m
+
+formatters:
+  enable:
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/zigai/zgod
+
+linters:
+  enable:
+    - asasalint
+    - bodyclose
+    - errcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - exptostd
+    - gochecknoinits
+    - gochecksumtype
+    - goconst
+    - gocritic
+    - godoclint
+    - godot
+    - gosec
+    - govet
+    - iface
+    - ineffassign
+    - intrange
+    - iotamixing
+    - makezero
+    - mirror
+    - modernize
+    - nolintlint
+    - rowserrcheck
+    - sqlclosecheck
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - usestdlibvars
+    - whitespace
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+
+    exhaustive:
+      check:
+        - switch
+        - map
+
+    gochecksumtype:
+      default-signifies-exhaustive: false
+
+    gocritic:
+      settings:
+        captLocal:
+          paramsOnly: false
+        underef:
+          skipRecvDeref: false
+
+    godoclint:
+      enable:
+        - no-unused-link
+        - require-stdlib-doclink
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+
+    staticcheck:
+      checks:
+        - all
+        - -ST1000
+        - -ST1016
+        - -QF1008
+
+    nolintlint:
+      allow-no-explanation: [funlen, gocognit, golines]
+      require-explanation: true
+      require-specific: true
+
+    rowserrcheck:
+      packages:
+        - github.com/jmoiron/sqlx
+
+    # your existing gosec policy overrides (kept)
+    gosec:
+      excludes:
+        - G204 # exec.Command from $EDITOR is user-controlled by design
+        - G301 # directory perms
+        - G302 # file perms
+        - G304 # file path from variable
+
+  exclusions:
+    warn-unused: true
+
+    # v2 replacement for your old `issues.exclude-use-default: false` behavior:
+    # make presets explicit (empty means "no preset exclusions").
+    presets: []
+
+    rules:
+      - source: "TODO"
+        linters: [godot]
+
+      - path: "_test\\.go"
+        linters:
+          - bodyclose
+          - errcheck
+          - goconst
+          - gosec
+
+      # If you enable revive later:
+      # - path: "^internal/"
+      #   linters: [revive]
