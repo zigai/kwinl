@@ -395,6 +395,7 @@ var cleanupCmd = &cobra.Command{
 
 var cleanupDryRunFlag bool
 
+//nolint:gochecknoinits // cobra setup uses init for flag wiring.
 func init() {
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
 	rootCmd.PersistentFlags().BoolVarP(&verboseFlag, "verbose", "v", false, "verbose output")
@@ -693,7 +694,11 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		if err := os.RemoveAll(tempDir); err != nil {
+			log.Printf("warning: failed to remove temp dir %s: %v", tempDir, err)
+		}
+	}()
 
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
@@ -702,7 +707,11 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 			Err:  fmt.Errorf("cannot connect to session D-Bus: %w", err),
 		}
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("warning: failed to close D-Bus connection: %v", err)
+		}
+	}()
 
 	var scriptNames []string
 	var cmdProcs []*exec.Cmd
@@ -794,6 +803,7 @@ type captureReceiver struct {
 	ch chan string
 }
 
+//nolint:unparam // D-Bus method signature requires *dbus.Error return; always nil.
 func (r *captureReceiver) Send(payload string) (bool, *dbus.Error) {
 	select {
 	case r.ch <- payload:
@@ -813,6 +823,7 @@ type placeResult struct {
 	Geometry string
 }
 
+//nolint:unparam // D-Bus method signature requires *dbus.Error return; always nil.
 func (r *placeReceiver) Placed(success bool, windowID, caption, geom string) (bool, *dbus.Error) {
 	select {
 	case r.ch <- placeResult{success, windowID, caption, geom}:
@@ -832,7 +843,7 @@ func runCapture(cmd *cobra.Command, args []string) error {
 		switch ext {
 		case ".yaml", ".yml":
 			format = "yaml"
-		case ".json":
+		case ".json": //nolint:goconst // extension strings are clearer inline for output validation.
 			format = "json"
 		default:
 			return &ValidationError{Field: "output", Value: outPath, Message: "expected .yaml/.yml/.json output file (or '-' for stdout)"}
@@ -848,7 +859,11 @@ func runCapture(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tempDir)
+	defer func() {
+		if err := os.RemoveAll(tempDir); err != nil {
+			log.Printf("warning: failed to remove temp dir %s: %v", tempDir, err)
+		}
+	}()
 
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
@@ -857,7 +872,11 @@ func runCapture(cmd *cobra.Command, args []string) error {
 			Err:  fmt.Errorf("cannot connect to session D-Bus: %w", err),
 		}
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("warning: failed to close D-Bus connection: %v", err)
+		}
+	}()
 
 	recv := &captureReceiver{ch: make(chan string, 1)}
 	serviceName := fmt.Sprintf("io.github.kwinlayout.Capture.p%d.r%s", os.Getpid(), generateRandomSuffix())
@@ -1002,7 +1021,11 @@ func runCleanup(cmd *cobra.Command, args []string) error {
 			Err:  fmt.Errorf("cannot connect to session D-Bus: %w", err),
 		}
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("warning: failed to close D-Bus connection: %v", err)
+		}
+	}()
 
 	scripts, err := discoverKwinLayoutScripts(conn)
 	if err != nil {
@@ -1112,6 +1135,12 @@ func setCommandFlowStyle(node *yaml.Node) {
 	case yaml.SequenceNode:
 		for _, c := range node.Content {
 			setCommandFlowStyle(c)
+		}
+	case yaml.ScalarNode:
+		return
+	case yaml.AliasNode:
+		if node.Alias != nil {
+			setCommandFlowStyle(node.Alias)
 		}
 	}
 }
@@ -1357,8 +1386,9 @@ func generateRandomSuffix() string {
 		return hex.EncodeToString(randomBytes)
 	}
 	log.Printf("warning: crypto/rand.Read failed; falling back to time-based suffix")
-	now := time.Now().UnixNano()
+	now := max(time.Now().UnixNano(), 0)
 	pid := os.Getpid()
+	// #nosec G115 -- now is clamped to non-negative above.
 	return fmt.Sprintf("%x%x", uint64(now), uint32(pid))
 }
 
@@ -2047,7 +2077,7 @@ func loadScript(conn *dbus.Conn, jsPath, scriptName string) (string, error) {
 	return normalizeScriptPath(call.Body)
 }
 
-func normalizeScriptPath(body []interface{}) (string, error) {
+func normalizeScriptPath(body []any) (string, error) {
 	if len(body) == 0 {
 		return "", &ScriptPathError{Reason: "empty response"}
 	}
