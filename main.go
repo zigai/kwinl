@@ -714,6 +714,30 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
+	recv := &placeReceiver{ch: make(chan placeResult, len(template.Presets)+2)}
+	callbackService := fmt.Sprintf("io.github.kwinlayout.Place.p%d.r%s", os.Getpid(), generateRandomSuffix())
+
+	reply, err := conn.RequestName(callbackService, dbus.NameFlagDoNotQueue)
+	if err != nil {
+		return &ExitError{
+			Code: exitCodeDBusFailure,
+			Err:  fmt.Errorf("cannot acquire launch place D-Bus name %q: %w", callbackService, err),
+		}
+	}
+	if reply != dbus.RequestNameReplyPrimaryOwner {
+		return &ExitError{
+			Code: exitCodeDBusFailure,
+			Err:  fmt.Errorf("cannot acquire launch place D-Bus name %q: already owned", callbackService),
+		}
+	}
+
+	if err := conn.Export(recv, dbus.ObjectPath(placeObjectPath), placeIface); err != nil {
+		return &ExitError{
+			Code: exitCodeDBusFailure,
+			Err:  fmt.Errorf("cannot export launch place D-Bus object: %w", err),
+		}
+	}
+
 	var scriptNames []string
 	var cmdProcs []*exec.Cmd
 	defer func() {
@@ -759,21 +783,22 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 		jsFile := filepath.Join(tempDir, scriptName+".js")
 
 		jsCfg := jsPlacementConfig{
-			ScriptName: scriptName,
-			App:        preset.App,
-			Match:      preset.Match,
-			Anchor:     anchor,
-			Monitor:    preset.Monitor,
-			Desktop:    preset.Desktop,
-			Pinned:     preset.Pinned,
-			Minimized:  preset.Minimized,
-			KeepAbove:  preset.KeepAbove,
-			KeepBelow:  preset.KeepBelow,
-			Maximized:  preset.Maximized,
-			FullScreen: preset.FullScreen,
-			Tile:       tile,
-			Geom:       geom,
-			Verbose:    verboseFlag,
+			ScriptName:      scriptName,
+			App:             preset.App,
+			Match:           preset.Match,
+			Anchor:          anchor,
+			Monitor:         preset.Monitor,
+			Desktop:         preset.Desktop,
+			Pinned:          preset.Pinned,
+			Minimized:       preset.Minimized,
+			KeepAbove:       preset.KeepAbove,
+			KeepBelow:       preset.KeepBelow,
+			Maximized:       preset.Maximized,
+			FullScreen:      preset.FullScreen,
+			Tile:            tile,
+			Geom:            geom,
+			Verbose:         verboseFlag,
+			CallbackService: callbackService,
 		}
 		js := generateJS(jsCfg)
 		if err := os.WriteFile(jsFile, []byte(js), 0600); err != nil {
@@ -809,6 +834,27 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 			}
 		}
 		cmdProcs = append(cmdProcs, cmdProc)
+
+		perPresetWait := timeout
+		const maxPerPresetWait = 2 * time.Second
+		if perPresetWait <= 0 || perPresetWait > maxPerPresetWait {
+			perPresetWait = maxPerPresetWait
+		}
+		timer := time.NewTimer(perPresetWait)
+		select {
+		case result := <-recv.ch:
+			verbose("launch preset %s placement callback: success=%v windowID=%s caption=%s geometry=%s",
+				label, result.Success, result.WindowID, result.Caption, result.Geometry)
+		case <-timer.C:
+			verbose("launch preset %s placement callback timeout after %s; continuing",
+				label, perPresetWait)
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
 	}
 
 	return waitAndCleanup(timeout, cmdProcs)
@@ -1826,13 +1872,51 @@ function isManageable(w) {
 
 function findMonitor(id) {
   if (!id || id === "") return workspace.activeScreen;
-  var screens = workspace.screens;
-  var idx = parseInt(id);
-  if (!isNaN(idx) && idx >= 0 && idx < screens.length) {
-    return screens[idx];
+  var screens = workspace.screens || [];
+  var idStr = ("" + id).trim();
+
+  function monitorName(mon) {
+    try { if (mon.name) return "" + mon.name; } catch (e) {}
+    try { if (mon.connector) return "" + mon.connector; } catch (e) {}
+    try { if (mon.connectorName) return "" + mon.connectorName; } catch (e) {}
+    return "";
   }
+
+  function norm(s) {
+    return ("" + s).toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
+
+  if (/^\d+$/.test(idStr)) {
+    var idx = parseInt(idStr, 10);
+    if (!isNaN(idx) && idx >= 0 && idx < screens.length) {
+      return screens[idx];
+    }
+  }
+
+  var names = [];
   for (var i = 0; i < screens.length; i++) {
-    if (screens[i].name === id) return screens[i];
+    var nm = monitorName(screens[i]);
+    if (nm !== "") names.push(nm);
+    if (nm === idStr) return screens[i];
+  }
+
+  var wanted = norm(idStr);
+  for (var j = 0; j < screens.length; j++) {
+    var n = monitorName(screens[j]);
+    if (n === "") continue;
+    if (n.toLowerCase() === idStr.toLowerCase()) return screens[j];
+    var m = norm(n);
+    if (wanted !== "" && m !== "" && (m === wanted || m.endsWith(wanted) || wanted.endsWith(m))) {
+      return screens[j];
+    }
+  }
+
+  if (names.length > 0) {
+    vlog("findMonitor: no match for", idStr, "available=", names.join(","));
+  }
+  if (screens.length > 0) {
+    vlog("findMonitor: falling back to first output index 0");
+    return screens[0];
   }
   return workspace.activeScreen;
 }
@@ -1848,6 +1932,15 @@ function findDesktop(id) {
     if (desktops[i].name === id) return desktops[i];
   }
   return null;
+}
+
+function windowOnMonitor(w, mon) {
+  if (!w || !mon) return false;
+  var g = w.frameGeometry;
+  var mg = mon.geometry;
+  var cx = g.x + g.width / 2;
+  var cy = g.y + g.height / 2;
+  return cx >= mg.x && cx < (mg.x + mg.width) && cy >= mg.y && cy < (mg.y + mg.height);
 }
 
 function resolveGeom(mon) {
@@ -1998,9 +2091,19 @@ function invokeQuickTileShortcut(w, tile) {
   var seq = tileShortcutSequence(tile);
   if (seq.length === 0) return false;
 
+  var want = idOf(w);
   try {
     workspace.activeWindow = w;
   } catch (e) { vlog("invokeQuickTileShortcut: failed to activate window", e); }
+
+  var active = "";
+  try {
+    if (workspace.activeWindow) active = idOf(workspace.activeWindow);
+  } catch (e) {}
+  if (active !== want) {
+    vlog("invokeQuickTileShortcut: target window is not active (want=", want, "active=", active, "), skipping");
+    return false;
+  }
 
   try {
     for (var i = 0; i < seq.length; i++) {
@@ -2017,6 +2120,7 @@ function invokeQuickTileShortcut(w, tile) {
 
 function tileLooksApplied(w, mon, tile) {
   if (!w || !mon) return false;
+  if (!windowOnMonitor(w, mon)) return false;
   var g = w.frameGeometry;
   var mg = mon.geometry;
   var cx = g.x + g.width / 2;
@@ -2075,13 +2179,26 @@ function applyAndStick(w) {
     vlog("applyAndStick: set fullscreen");
     notifySuccess(w);
   } else if (targetTileMode !== 0) {
+    if (MONITOR !== "" && !windowOnMonitor(w, targetMon)) {
+      vlog("applyAndStick: window not yet on target monitor; tiling with fallback enabled");
+    }
+    var tileApplied = false;
     try {
       w.quickTileMode = targetTileMode;
-      vlog("applyAndStick: set quickTileMode to", targetTileMode);
+      tileApplied = tileLooksApplied(w, targetMon, TILE);
+      vlog("applyAndStick: set quickTileMode to", targetTileMode, "applied=", tileApplied);
     } catch (e) {
       vlog("applyAndStick: set quickTileMode failed", e);
+    }
+
+    if (!tileApplied) {
+      _ = invokeQuickTileShortcut(w, TILE);
+      tileApplied = tileLooksApplied(w, targetMon, TILE);
+    }
+
+    if (!tileApplied) {
       w.frameGeometry = target;
-      vlog("applyAndStick: fallback geometry to", target.x, target.y, target.width, target.height);
+      vlog("applyAndStick: immediate fallback geometry to", target.x, target.y, target.width, target.height);
     }
   } else {
     w.frameGeometry = target;
@@ -2114,23 +2231,30 @@ function applyAndStick(w) {
     try { w.keepBelow = true; } catch (e) {}
   }
 
-  var triesLeft = 6;
+  var triesLeft = 200;
+  var retryLimitLogged = false;
   var notified = false;
-  var tileShortcutInvoked = false;
+  var tileShortcutAttempts = 0;
 
   function ensure() {
     if (!KEEP_MODE) {
-      if (triesLeft <= 0) {
-        vlog("ensure: tries exhausted, finishing");
-        finish();
-        return;
+      if (triesLeft > 0) {
+        triesLeft--;
+      } else if (!retryLimitLogged) {
+        // Keep script loaded until launcher cleanup; some apps can re-center very late.
+        vlog("ensure: retry budget exhausted; continuing without auto-unload");
+        retryLimitLogged = true;
       }
-      triesLeft--;
     }
 
     if (FULLSCREEN) return;
 
     if (targetTileMode !== 0) {
+      if (MONITOR !== "" && !windowOnMonitor(w, targetMon)) {
+        vlog("ensure(tile): window not on target monitor, retrying move and continuing");
+        try { workspace.sendWindowToOutput(w, targetMon); } catch (e) {}
+      }
+
       var tileOk = tileLooksApplied(w, targetMon, TILE);
       var currentTileMode = 0;
       try { currentTileMode = (w.quickTileMode || 0); } catch (e) {}
@@ -2144,14 +2268,21 @@ function applyAndStick(w) {
         return;
       }
 
-      if (!tileShortcutInvoked) {
-        tileShortcutInvoked = invokeQuickTileShortcut(w, TILE);
-        if (tileShortcutInvoked) return;
+      if (tileShortcutAttempts < 6) {
+        if (invokeQuickTileShortcut(w, TILE)) {
+          vlog("ensure(tile): shortcut invoke attempt", tileShortcutAttempts + 1, "sent");
+        }
+        tileShortcutAttempts++;
       }
 
       try { w.quickTileMode = targetTileMode; } catch (e) {}
       w.frameGeometry = target;
       return;
+    }
+
+    if (MONITOR !== "" && !windowOnMonitor(w, targetMon)) {
+      vlog("ensure: window not on target monitor, retrying move");
+      try { workspace.sendWindowToOutput(w, targetMon); } catch (e) {}
     }
 
     var g = w.frameGeometry;
@@ -2478,6 +2609,12 @@ func launchCommand(cmdSlice []string) (*exec.Cmd, error) {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Env = filteredEnv(os.Environ(),
+		"XDG_ACTIVATION_TOKEN",
+		"DESKTOP_STARTUP_ID",
+		"GIO_LAUNCHED_DESKTOP_FILE",
+		"GIO_LAUNCHED_DESKTOP_FILE_PID",
+	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}
@@ -2485,6 +2622,30 @@ func launchCommand(cmdSlice []string) (*exec.Cmd, error) {
 		return nil, err
 	}
 	return cmd, nil
+}
+
+func filteredEnv(env []string, drop ...string) []string {
+	if len(drop) == 0 || len(env) == 0 {
+		return env
+	}
+	dropSet := make(map[string]struct{}, len(drop))
+	for _, key := range drop {
+		dropSet[key] = struct{}{}
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		eq := strings.IndexByte(kv, '=')
+		if eq <= 0 {
+			out = append(out, kv)
+			continue
+		}
+		key := kv[:eq]
+		if _, remove := dropSet[key]; remove {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 var envVarBraceRE = regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
