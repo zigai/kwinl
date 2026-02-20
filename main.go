@@ -39,11 +39,11 @@ const (
 	exitCodeInterrupted  = 130
 	exitCodeTerminated   = 143
 
-	captureObjectPath = "/io/github/kwinlayout/Capture"
-	captureIface      = "io.github.kwinlayout.Capture"
+	captureObjectPath = "/io/github/kwinl/Capture"
+	captureIface      = "io.github.kwinl.Capture"
 
-	placeObjectPath = "/io/github/kwinlayout/Place"
-	placeIface      = "io.github.kwinlayout.Place"
+	placeObjectPath = "/io/github/kwinl/Place"
+	placeIface      = "io.github.kwinl.Place"
 )
 
 var validAnchors = []string{
@@ -303,9 +303,9 @@ type captureOptions struct {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "kwin-layout",
+	Use:   "kwinl",
 	Short: "KWin window placement tool",
-	Long: `kwin-layout loads temporary KWin scripts via D-Bus that intercept newly created
+	Long: `kwinl loads temporary KWin scripts via D-Bus that intercept newly created
 windows and move/resize them to the requested geometry.`,
 	Version: version,
 }
@@ -322,10 +322,10 @@ Percentages are relative to the target monitor's dimensions.
 
 At least one of --app or --match is required. When both are provided, either can
 trigger a match (OR logic).`,
-	Example: `  kwin-layout place --app org.kde.konsole --geom 50,50,900,700 --timeout 8s --cmd "konsole --separate"
-  kwin-layout place --app org.kde.konsole --geom 0,0,50%,100% --anchor top-left --cmd "konsole"
-  kwin-layout place --match "^Firefox.*Private" --geom 0,0,50%,100% --cmd "firefox --private-window"
-  kwin-layout place --app firefox --match "YouTube" --geom 0,0,50%,100% --cmd firefox`,
+	Example: `  kwinl place --app org.kde.konsole --geom 50,50,900,700 --timeout 8s --cmd "konsole --separate"
+  kwinl place --app org.kde.konsole --geom 0,0,50%,100% --anchor top-left --cmd "konsole"
+  kwinl place --match "^Firefox.*Private" --geom 0,0,50%,100% --cmd "firefox --private-window"
+  kwinl place --app firefox --match "YouTube" --geom 0,0,50%,100% --cmd firefox`,
 	DisableFlagsInUseLine: true,
 	SilenceUsage:          true,
 	SilenceErrors:         true,
@@ -338,8 +338,8 @@ var launchCmd = &cobra.Command{
 	Short: "Batch launch windows from a YAML/JSON template",
 	Long: `Reads a template file containing multiple window presets and launches
 all specified applications with their configured geometries.`,
-	Example: `  kwin-layout launch layout.yaml
-  kwin-layout launch workspace.json --timeout 15s`,
+	Example: `  kwinl launch layout.yaml
+  kwinl launch workspace.json --timeout 15s`,
 	Args:          cobra.ExactArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -350,7 +350,7 @@ var captureCmd = &cobra.Command{
 	Use:   "capture <layout.yaml|layout.yml|layout.json|-> [flags]",
 	Short: "Capture currently open windows into a layout template",
 	Long: `Captures the geometry/monitor/desktop of currently open windows and writes a YAML
-or JSON template (based on output file extension) suitable for use with "kwin-layout launch".
+or JSON template (based on output file extension) suitable for use with "kwinl launch".
 
 By default, only windows with a known application ID are included. Use --include-unknown
 to also capture windows without an application ID (these will be matched by window title).
@@ -360,10 +360,10 @@ Maximized and fullscreen states are captured and will be restored when launching
 If --infer-command is enabled (default), each preset uses:
   command: ["gtk-launch", "<app-id>"]
 This is a best-effort launcher and may not reproduce multi-window apps exactly.`,
-	Example: `  kwin-layout capture layout.yaml
-  kwin-layout capture layout.json --include-unknown
-  kwin-layout capture layout.yml --current-desktop
-  kwin-layout capture layout.yaml --monitor DP-1`,
+	Example: `  kwinl capture layout.yaml
+  kwinl capture layout.json --include-unknown
+  kwinl capture layout.yml --current-desktop
+  kwinl capture layout.yaml --monitor DP-1`,
 	Args:          cobra.ExactArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -374,8 +374,8 @@ var validateCmd = &cobra.Command{
 	Use:   "validate <layout-file>",
 	Short: "Validate a layout template without launching",
 	Long:  `Validates a YAML/JSON layout file for syntax errors, missing fields, and invalid values without launching any windows.`,
-	Example: `  kwin-layout validate layout.yaml
-  kwin-layout validate workspace.json`,
+	Example: `  kwinl validate layout.yaml
+  kwinl validate workspace.json`,
 	Args:          cobra.ExactArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -384,10 +384,10 @@ var validateCmd = &cobra.Command{
 
 var cleanupCmd = &cobra.Command{
 	Use:   "cleanup",
-	Short: "Unload orphaned kwin-layout scripts",
-	Long:  `Discovers and unloads KWin scripts matching kwin-layout-* pattern.`,
-	Example: `  kwin-layout cleanup --dry-run
-  kwin-layout cleanup`,
+	Short: "Unload orphaned kwinl scripts",
+	Long:  `Discovers and unloads KWin scripts matching kwinl-* pattern.`,
+	Example: `  kwinl cleanup --dry-run
+  kwinl cleanup`,
 	Args:          cobra.NoArgs,
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -449,7 +449,7 @@ func verbose(format string, args ...any) {
 
 func main() {
 	log.SetFlags(0)
-	log.SetPrefix("kwin-layout: ")
+	log.SetPrefix("kwinl: ")
 	if err := rootCmd.Execute(); err != nil {
 		log.Println(err)
 		os.Exit(exitCodeFor(err))
@@ -519,7 +519,7 @@ func runPlace(cmd *cobra.Command, args []string) error {
 	}()
 
 	recv := &placeReceiver{ch: make(chan placeResult, 1)}
-	callbackService := fmt.Sprintf("io.github.kwinlayout.Place.p%d.r%s", os.Getpid(), generateRandomSuffix())
+	callbackService := fmt.Sprintf("io.github.kwinl.Place.p%d.r%s", os.Getpid(), generateRandomSuffix())
 
 	verbose("registering D-Bus service %s", callbackService)
 	reply, err := conn.RequestName(callbackService, dbus.NameFlagDoNotQueue)
@@ -648,7 +648,7 @@ func parseAndValidatePlace() (Config, error) {
 
 	scriptName := generateScriptName()
 
-	tempDir, err := os.MkdirTemp("", "kwin-layout-*")
+	tempDir, err := os.MkdirTemp("", "kwinl-*")
 	if err != nil {
 		return Config{}, fmt.Errorf("failed to create temp dir: %w", err)
 	}
@@ -691,7 +691,7 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	tempDir, err := os.MkdirTemp("", "kwin-layout-launch-*")
+	tempDir, err := os.MkdirTemp("", "kwinl-launch-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)
 	}
@@ -715,7 +715,7 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 	}()
 
 	recv := &placeReceiver{ch: make(chan placeResult, len(template.Presets)+2)}
-	callbackService := fmt.Sprintf("io.github.kwinlayout.Place.p%d.r%s", os.Getpid(), generateRandomSuffix())
+	callbackService := fmt.Sprintf("io.github.kwinl.Place.p%d.r%s", os.Getpid(), generateRandomSuffix())
 
 	reply, err := conn.RequestName(callbackService, dbus.NameFlagDoNotQueue)
 	if err != nil {
@@ -779,7 +779,7 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 			geom.Y = GeomValue{Value: 50, Percent: true}
 		}
 
-		scriptName := fmt.Sprintf("kwin-layout-%d-%d-%s", os.Getpid(), i, generateRandomSuffix())
+		scriptName := fmt.Sprintf("kwinl-%d-%d-%s", os.Getpid(), i, generateRandomSuffix())
 		jsFile := filepath.Join(tempDir, scriptName+".js")
 
 		jsCfg := jsPlacementConfig{
@@ -916,7 +916,7 @@ func runCapture(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	tempDir, err := os.MkdirTemp("", "kwin-layout-capture-*")
+	tempDir, err := os.MkdirTemp("", "kwinl-capture-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)
 	}
@@ -940,7 +940,7 @@ func runCapture(cmd *cobra.Command, args []string) error {
 	}()
 
 	recv := &captureReceiver{ch: make(chan string, 1)}
-	serviceName := fmt.Sprintf("io.github.kwinlayout.Capture.p%d.r%s", os.Getpid(), generateRandomSuffix())
+	serviceName := fmt.Sprintf("io.github.kwinl.Capture.p%d.r%s", os.Getpid(), generateRandomSuffix())
 
 	reply, err := conn.RequestName(serviceName, dbus.NameFlagDoNotQueue)
 	if err != nil {
@@ -963,7 +963,7 @@ func runCapture(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	scriptName := fmt.Sprintf("kwin-layout-capture-%d-%s", os.Getpid(), generateRandomSuffix())
+	scriptName := fmt.Sprintf("kwinl-capture-%d-%s", os.Getpid(), generateRandomSuffix())
 	jsFile := filepath.Join(tempDir, scriptName+".js")
 	opts := captureOptions{
 		InferCommand:   captureInferCommandFlag,
@@ -1094,7 +1094,7 @@ func runCleanup(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(scripts) == 0 {
-		fmt.Println("no orphaned kwin-layout scripts found")
+		fmt.Println("no orphaned kwinl scripts found")
 		return nil
 	}
 
@@ -1157,7 +1157,7 @@ func discoverKwinLayoutScripts(conn *dbus.Conn) ([]string, error) {
 		}
 
 		verbose("found script: %s", name)
-		if strings.HasPrefix(name, "kwin-layout-") {
+		if strings.HasPrefix(name, "kwinl-") {
 			scripts = append(scripts, name)
 		}
 	}
@@ -1518,7 +1518,7 @@ func parseTimeout(s string) (time.Duration, error) {
 }
 
 func generateScriptName() string {
-	return fmt.Sprintf("kwin-layout-%d-%s", os.Getpid(), generateRandomSuffix())
+	return fmt.Sprintf("kwinl-%d-%s", os.Getpid(), generateRandomSuffix())
 }
 
 func generateRandomSuffix() string {
@@ -1760,13 +1760,13 @@ var GEOM_W = {value: %d, percent: %v};
 var GEOM_H = {value: %d, percent: %v};
 var VERBOSE = %v;
 var CALLBACK_SERVICE = %s;
-var CALLBACK_PATH = "/io/github/kwinlayout/Place";
-var CALLBACK_IFACE = "io.github.kwinlayout.Place";
+var CALLBACK_PATH = "/io/github/kwinl/Place";
+var CALLBACK_IFACE = "io.github.kwinl.Place";
 var KEEP_MODE = %v;
 
 function vlog() {
   if (!VERBOSE) return;
-  var msg = "[kwin-layout] ";
+  var msg = "[kwinl] ";
   for (var i = 0; i < arguments.length; i++) msg += arguments[i] + " ";
   print(msg);
 }

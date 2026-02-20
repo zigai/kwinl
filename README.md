@@ -1,4 +1,4 @@
-# kwin-layout
+# kwinl
 
 Declarative window placement for KWin: launch programs into predefined geometries and batch-start full layouts from YAML/JSON templates.
 
@@ -8,7 +8,7 @@ Declarative window placement for KWin: launch programs into predefined geometrie
 - Launch: apply a YAML/JSON layout to start and arrange multiple apps at once
 - Capture: snapshot current windows into a reusable YAML/JSON layout template
 - Validate: check a layout file for errors without launching anything
-- Cleanup: unload orphaned kwin-layout scripts from KWin
+- Cleanup: unload orphaned kwinl scripts from KWin
 
 ## Requirements
 
@@ -18,20 +18,20 @@ Declarative window placement for KWin: launch programs into predefined geometrie
 ## Installation
 
 ```bash
-go install github.com/zigai/kwin-layout@latest
+go install github.com/zigai/kwinl@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/zigai/kwin-layout.git
-cd kwin-layout
-go build -o kwin-layout .
+git clone https://github.com/zigai/kwinl.git
+cd kwinl
+go build -o kwinl .
 ```
 
 ## Help
 
-#### kwin-layout place
+#### kwinl place
 
 ```
 Loads a temporary KWin script via D-Bus that intercepts newly created
@@ -42,14 +42,14 @@ Geometry values can be absolute pixels (e.g., 100) or percentages (e.g., 50%).
 Percentages are relative to the target monitor's dimensions.
 
 Usage:
-  kwin-layout place [--app <app-id>] [--match <regex>] --geom <x>,<y>,<w>,<h> --cmd "<command>" [flags]
+  kwinl place [--app <app-id>] [--match <regex>] --geom <x>,<y>,<w>,<h> --cmd "<command>" [flags]
 
 Examples:
-  kwin-layout place --app org.kde.konsole --geom 50,50,900,700 --timeout 8s --cmd "konsole --separate"
-  kwin-layout place --app org.kde.konsole --geom 0,0,50%,100% --anchor top-left --cmd "konsole"
-  kwin-layout place --match "^Firefox.*Private" --geom 0,0,50%,100% --cmd "firefox --private-window"
-  kwin-layout place --app firefox --match "YouTube" --geom 0,0,50%,100% --cmd firefox
-  kwin-layout place --app org.kde.konsole --geom 0,0,800,600 --centered --cmd konsole
+  kwinl place --app org.kde.konsole --geom 50,50,900,700 --timeout 8s --cmd "konsole --separate"
+  kwinl place --app org.kde.konsole --geom 0,0,50%,100% --anchor top-left --cmd "konsole"
+  kwinl place --match "^Firefox.*Private" --geom 0,0,50%,100% --cmd "firefox --private-window"
+  kwinl place --app firefox --match "YouTube" --geom 0,0,50%,100% --cmd firefox
+  kwinl place --app org.kde.konsole --geom 0,0,800,600 --centered --cmd konsole
 
 Flags:
       --anchor string    anchor point for positioning (default "top-left")
@@ -75,18 +75,18 @@ Note: At least one of --app or --match is required. When both are provided,
 either can trigger a match (OR logic).
 ```
 
-#### kwin-layout launch
+#### kwinl launch
 
 ```
 Reads a template file containing multiple window presets and launches
 all specified applications with their configured geometries.
 
 Usage:
-  kwin-layout launch <config.yaml|config.json> [--timeout <duration>] [flags]
+  kwinl launch <config.yaml|config.json> [--timeout <duration>] [flags]
 
 Examples:
-  kwin-layout launch layout.yaml
-  kwin-layout launch workspace.json --timeout 15s
+  kwinl launch layout.yaml
+  kwinl launch workspace.json --timeout 15s
 
 Flags:
   -h, --help             help for launch
@@ -96,11 +96,11 @@ Global Flags:
   -v, --verbose   verbose output
 ```
 
-#### kwin-layout capture
+#### kwinl capture
 
 ```
 Captures the geometry/monitor/desktop of currently open windows and writes a YAML
-or JSON template (based on output file extension) suitable for use with "kwin-layout launch".
+or JSON template (based on output file extension) suitable for use with "kwinl launch".
 
 By default, only windows with a non-empty desktopFileName are included. Use --include-unknown
 to also capture windows without desktopFileName (these will be matched by window title).
@@ -112,13 +112,13 @@ If --infer-command is enabled (default), each preset uses:
 This is a best-effort launcher and may not reproduce multi-window apps exactly.
 
 Usage:
-  kwin-layout capture <layout.yaml|layout.yml|layout.json|-> [flags]
+  kwinl capture <layout.yaml|layout.yml|layout.json|-> [flags]
 
 Examples:
-  kwin-layout capture layout.yaml
-  kwin-layout capture layout.json --include-unknown
-  kwin-layout capture layout.yml --current-desktop
-  kwin-layout capture layout.yaml --monitor DP-1
+  kwinl capture layout.yaml
+  kwinl capture layout.json --include-unknown
+  kwinl capture layout.yml --current-desktop
+  kwinl capture layout.yaml --monitor DP-1
 
 Flags:
   -d, --current-desktop    only capture windows on current desktop
@@ -132,18 +132,18 @@ Global Flags:
   -v, --verbose   verbose output
 ```
 
-#### kwin-layout validate
+#### kwinl validate
 
 ```
 Validates a YAML/JSON layout file for syntax errors, missing fields,
 and invalid values without launching any windows.
 
 Usage:
-  kwin-layout validate <layout-file> [flags]
+  kwinl validate <layout-file> [flags]
 
 Examples:
-  kwin-layout validate layout.yaml
-  kwin-layout validate workspace.json
+  kwinl validate layout.yaml
+  kwinl validate workspace.json
 
 Flags:
   -h, --help   help for validate
@@ -152,17 +152,17 @@ Global Flags:
   -v, --verbose   verbose output
 ```
 
-#### kwin-layout cleanup
+#### kwinl cleanup
 
 ```
-Discovers and unloads KWin scripts matching kwin-layout-* pattern.
+Discovers and unloads KWin scripts matching kwinl-* pattern.
 
 Usage:
-  kwin-layout cleanup [flags]
+  kwinl cleanup [flags]
 
 Examples:
-  kwin-layout cleanup --dry-run
-  kwin-layout cleanup
+  kwinl cleanup --dry-run
+  kwinl cleanup
 
 Flags:
   -n, --dry-run   list without unloading
