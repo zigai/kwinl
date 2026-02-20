@@ -200,7 +200,8 @@ presets:
 | `app` | one of app/match | Application ID to match (e.g., `org.kde.konsole`) |
 | `match` | one of app/match | Regex pattern to match window title (e.g., `^Firefox$`) |
 | `command` | yes | Command to launch (array recommended, string accepted) |
-| `geometry` | yes | Window geometry with `x`, `y`, `width`, `height` |
+| `geometry` | yes* | Window geometry with `x`, `y`, `width`, `height` |
+| `tile` | no | Quick-tile mode: `left`, `right`, `top`, `bottom`, `top-left`, `top-right`, `bottom-left`, `bottom-right` |
 | `anchor` | no | Anchor point for positioning (default: `top-left`) |
 | `monitor` | no | Target monitor (index or name like `DP-1`) |
 | `desktop` | no | Target virtual desktop (1-based index or name) |
@@ -211,6 +212,18 @@ presets:
 | `minimized` | no | Set to `true` to start window minimized |
 | `keepAbove` | no | Set to `true` to keep window above others (always on top) |
 | `keepBelow` | no | Set to `true` to keep window below others |
+
+\* `geometry` is required unless `tile` is set.
+`tile` cannot be combined with `centered`, `maximized`, or `fullscreen`.
+
+Quick-tiling example (supports shared split resizing in KWin):
+
+```yaml
+- name: left-pane
+  app: com.mitchellh.ghostty
+  command: [ghostty]
+  tile: left
+```
 
 #### Command specification
 
