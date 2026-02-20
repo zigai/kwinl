@@ -96,6 +96,7 @@ type Preset struct {
 	Match      string         `json:"match,omitempty" yaml:"match,omitempty"`
 	Command    CommandSpec    `json:"command" yaml:"command"`
 	Geometry   PresetGeometry `json:"geometry" yaml:"geometry"`
+	Tile       string         `json:"tile,omitempty" yaml:"tile,omitempty"`
 	Anchor     string         `json:"anchor,omitempty" yaml:"anchor,omitempty"`
 	Monitor    string         `json:"monitor,omitempty" yaml:"monitor,omitempty"`
 	Desktop    string         `json:"desktop,omitempty" yaml:"desktop,omitempty"`
@@ -725,14 +726,27 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 			label = fmt.Sprintf("#%d", i)
 		}
 
+		tile := normalizeTileValue(preset.Tile)
 		anchor := preset.Anchor
 		if anchor == "" {
 			anchor = "top-left"
 		}
 
-		geom, err := parsePresetGeometry(preset.Geometry, preset.Centered)
-		if err != nil {
-			return &PresetError{Preset: label, Field: "geometry", Err: err}
+		var geom ParsedGeometry
+		geomProvided := hasAllPresetGeometry(preset.Geometry)
+		if geomProvided || tile == "" {
+			geom, err = parsePresetGeometry(preset.Geometry, preset.Centered)
+			if err != nil {
+				return &PresetError{Preset: label, Field: "geometry", Err: err}
+			}
+		} else {
+			// Geometry is optional for quick-tiling presets.
+			geom = ParsedGeometry{
+				X: GeomValue{Value: 0, Percent: false},
+				Y: GeomValue{Value: 0, Percent: false},
+				W: GeomValue{Value: 100, Percent: true},
+				H: GeomValue{Value: 100, Percent: true},
+			}
 		}
 
 		if preset.Centered {
@@ -757,6 +771,7 @@ func runLaunch(cmd *cobra.Command, args []string) error {
 			KeepBelow:  preset.KeepBelow,
 			Maximized:  preset.Maximized,
 			FullScreen: preset.FullScreen,
+			Tile:       tile,
 			Geom:       geom,
 			Verbose:    verboseFlag,
 		}
@@ -1248,6 +1263,11 @@ func parseTemplate(path string) (Template, error) {
 }
 
 var validMaximizedValues = []string{"", "horizontal", "vertical", "both"}
+var validTileValues = []string{
+	"",
+	"left", "right", "top", "bottom",
+	"top-left", "top-right", "bottom-left", "bottom-right",
+}
 
 func validateTemplate(t Template) error {
 	if len(t.Presets) == 0 {
@@ -1283,22 +1303,75 @@ func validateTemplate(t Template) error {
 			}
 		}
 
-		geom, err := parsePresetGeometry(p.Geometry, p.Centered)
-		if err != nil {
-			return &PresetError{Preset: label, Field: "geometry", Err: err}
-		}
-
-		if geom.W.Value <= 0 {
+		tile := normalizeTileValue(p.Tile)
+		if !isValidTile(tile) {
 			return &PresetError{
 				Preset: label,
-				Err:    &GeometryError{Component: "width", Reason: "must be > 0"},
+				Err: &ValidationError{
+					Field:   "tile",
+					Value:   p.Tile,
+					Message: "valid values: left, right, top, bottom, top-left, top-right, bottom-left, bottom-right (or empty)",
+				},
 			}
 		}
 
-		if geom.H.Value <= 0 {
+		if tile != "" {
+			if p.Centered {
+				return &PresetError{
+					Preset: label,
+					Err:    &ValidationError{Field: "centered", Message: "cannot be combined with tile"},
+				}
+			}
+			if p.Maximized != "" {
+				return &PresetError{
+					Preset: label,
+					Err:    &ValidationError{Field: "maximized", Message: "cannot be combined with tile"},
+				}
+			}
+			if p.FullScreen {
+				return &PresetError{
+					Preset: label,
+					Err:    &ValidationError{Field: "fullscreen", Message: "cannot be combined with tile"},
+				}
+			}
+		}
+
+		geomProvided := hasAnyPresetGeometry(p.Geometry)
+		geomComplete := hasAllPresetGeometry(p.Geometry)
+		if geomProvided && !geomComplete {
 			return &PresetError{
 				Preset: label,
-				Err:    &GeometryError{Component: "height", Reason: "must be > 0"},
+				Err: &ValidationError{
+					Field:   "geometry",
+					Message: "x, y, width, height must all be set together",
+				},
+			}
+		}
+		if !geomComplete && tile == "" {
+			return &PresetError{
+				Preset: label,
+				Err:    &ValidationError{Field: "geometry", Message: "required unless tile is set"},
+			}
+		}
+
+		if geomComplete {
+			geom, err := parsePresetGeometry(p.Geometry, p.Centered)
+			if err != nil {
+				return &PresetError{Preset: label, Field: "geometry", Err: err}
+			}
+
+			if geom.W.Value <= 0 {
+				return &PresetError{
+					Preset: label,
+					Err:    &GeometryError{Component: "width", Reason: "must be > 0"},
+				}
+			}
+
+			if geom.H.Value <= 0 {
+				return &PresetError{
+					Preset: label,
+					Err:    &GeometryError{Component: "height", Reason: "must be > 0"},
+				}
 			}
 		}
 
@@ -1330,6 +1403,28 @@ func validateTemplate(t Template) error {
 
 func isValidMaximized(v string) bool {
 	return slices.Contains(validMaximizedValues, v)
+}
+
+func isValidTile(v string) bool {
+	return slices.Contains(validTileValues, v)
+}
+
+func normalizeTileValue(v string) string {
+	return strings.ToLower(strings.TrimSpace(v))
+}
+
+func hasAnyPresetGeometry(pg PresetGeometry) bool {
+	return strings.TrimSpace(pg.X) != "" ||
+		strings.TrimSpace(pg.Y) != "" ||
+		strings.TrimSpace(pg.Width) != "" ||
+		strings.TrimSpace(pg.Height) != ""
+}
+
+func hasAllPresetGeometry(pg PresetGeometry) bool {
+	return strings.TrimSpace(pg.X) != "" &&
+		strings.TrimSpace(pg.Y) != "" &&
+		strings.TrimSpace(pg.Width) != "" &&
+		strings.TrimSpace(pg.Height) != ""
 }
 
 func determineLaunchTimeout(t Template) (time.Duration, error) {
@@ -1575,6 +1670,7 @@ type jsPlacementConfig struct {
 	Anchor          string
 	Monitor         string
 	Desktop         string
+	Tile            string
 	Pinned          bool
 	Minimized       bool
 	KeepAbove       bool
@@ -1594,6 +1690,7 @@ func generateJS(cfg jsPlacementConfig) string {
 	anchorJSON, _ := json.Marshal(cfg.Anchor)
 	monitorJSON, _ := json.Marshal(cfg.Monitor)
 	desktopJSON, _ := json.Marshal(cfg.Desktop)
+	tileJSON, _ := json.Marshal(cfg.Tile)
 	maximizedJSON, _ := json.Marshal(cfg.Maximized)
 	callbackServiceJSON, _ := json.Marshal(cfg.CallbackService)
 
@@ -1604,6 +1701,7 @@ var TARGET_MATCH = %s;
 var ANCHOR = %s;
 var MONITOR = %s;
 var DESKTOP = %s;
+var TILE = %s;
 var PINNED = %v;
 var MINIMIZED = %v;
 var KEEP_ABOVE = %v;
@@ -1629,14 +1727,81 @@ function vlog() {
 
 function idOf(w) { return "" + w.internalId; }
 
+function windowIds(w) {
+  var ids = [];
+  function add(v) {
+    if (v === undefined || v === null) return;
+    var s = ("" + v).trim();
+    if (s === "") return;
+    for (var i = 0; i < ids.length; i++) {
+      if (ids[i] === s) return;
+    }
+    ids.push(s);
+  }
+
+  try { add(w.desktopFileName); } catch (e) {}
+  try { add(w.resourceClass); } catch (e) {}
+  try { add(w.resourceName); } catch (e) {}
+  try { add(w.appId); } catch (e) {}
+  return ids;
+}
+
+function appTargetMatches(id, target) {
+  if (!id || !target) return false;
+  if (id === target) return true;
+  if (id === (target + ".desktop")) return true;
+  if (id.endsWith("/" + target + ".desktop")) return true;
+  if (id.endsWith("/" + target)) return true;
+
+  var idLower = id.toLowerCase();
+  var targetLower = target.toLowerCase();
+  if (idLower === targetLower) return true;
+  if (idLower === (targetLower + ".desktop")) return true;
+  if (idLower.endsWith("/" + targetLower + ".desktop")) return true;
+  if (idLower.endsWith("/" + targetLower)) return true;
+
+  function stripPathAndDesktop(s) {
+    var out = s;
+    var slash = out.lastIndexOf("/");
+    if (slash >= 0) out = out.slice(slash + 1);
+    if (out.endsWith(".desktop")) out = out.slice(0, -8);
+    return out;
+  }
+
+  function lastSegment(s) {
+    var dot = s.lastIndexOf(".");
+    if (dot >= 0 && dot + 1 < s.length) return s.slice(dot + 1);
+    return s;
+  }
+
+  function stripInstanceSuffix(s) {
+    // Treat ghostty-like class suffixes (e.g. "-1") as the same base app.
+    return s.replace(/-[0-9]+$/, "");
+  }
+
+  var idNorm = stripPathAndDesktop(idLower);
+  var targetNorm = stripPathAndDesktop(targetLower);
+  if (idNorm === targetNorm) return true;
+
+  var idTail = stripInstanceSuffix(lastSegment(idNorm));
+  var targetTail = stripInstanceSuffix(lastSegment(targetNorm));
+  if (idTail !== "" && idTail === targetTail) return true;
+
+  if (idNorm.startsWith(targetNorm + "-")) return true;
+  if (targetNorm.startsWith(idNorm + "-")) return true;
+  return false;
+}
+
 function appMatches(w) {
   if (TARGET_APP === "" && TARGET_MATCH === "") return false;
-  var app = w.desktopFileName ? ("" + w.desktopFileName) : "";
+  var ids = windowIds(w);
   if (TARGET_APP !== "") {
-    if (app === TARGET_APP) { vlog("appMatches: exact match", app); return true; }
-    if (app === (TARGET_APP + ".desktop")) { vlog("appMatches: .desktop match", app); return true; }
-    if (app.endsWith("/" + TARGET_APP + ".desktop")) { vlog("appMatches: path/.desktop match", app); return true; }
-    if (app.endsWith("/" + TARGET_APP)) { vlog("appMatches: path match", app); return true; }
+    for (var i = 0; i < ids.length; i++) {
+      if (appTargetMatches(ids[i], TARGET_APP)) {
+        vlog("appMatches: id match id=", ids[i], "target=", TARGET_APP);
+        return true;
+      }
+    }
   }
   if (TARGET_MATCH !== "") {
     try {
@@ -1645,7 +1810,7 @@ function appMatches(w) {
       if (re.test(caption)) { vlog("appMatches: regex match caption=", caption); return true; }
     } catch (e) { vlog("appMatches: regex error", e); }
   }
-  vlog("appMatches: no match app=", app, "caption=", w.caption || "");
+  vlog("appMatches: no match ids=", ids.join("|"), "caption=", w.caption || "");
   return false;
 }
 
@@ -1754,6 +1919,133 @@ var targetMon = findMonitor(MONITOR);
 var target = resolveGeom(targetMon);
 vlog("target geometry:", target.x, target.y, target.width, target.height);
 
+function resolveTileFallbackGeom(mon, tile) {
+  var mg = mon.geometry;
+  var halfW = Math.round(mg.width / 2);
+  var halfH = Math.round(mg.height / 2);
+  var leftX = mg.x;
+  var rightX = mg.x + mg.width - halfW;
+  var topY = mg.y;
+  var bottomY = mg.y + mg.height - halfH;
+
+  switch (tile) {
+    case "left":
+      return {x: leftX, y: topY, width: halfW, height: mg.height};
+    case "right":
+      return {x: rightX, y: topY, width: halfW, height: mg.height};
+    case "top":
+      return {x: leftX, y: topY, width: mg.width, height: halfH};
+    case "bottom":
+      return {x: leftX, y: bottomY, width: mg.width, height: halfH};
+    case "top-left":
+      return {x: leftX, y: topY, width: halfW, height: halfH};
+    case "top-right":
+      return {x: rightX, y: topY, width: halfW, height: halfH};
+    case "bottom-left":
+      return {x: leftX, y: bottomY, width: halfW, height: halfH};
+    case "bottom-right":
+      return {x: rightX, y: bottomY, width: halfW, height: halfH};
+    default:
+      return target;
+  }
+}
+
+function quickTileModeFor(tile) {
+  switch (tile) {
+    case "left": return 1;
+    case "right": return 2;
+    case "top": return 4;
+    case "bottom": return 8;
+    case "top-left": return 5;
+    case "top-right": return 6;
+    case "bottom-left": return 9;
+    case "bottom-right": return 10;
+    default: return 0;
+  }
+}
+
+var targetTileMode = quickTileModeFor(TILE);
+if (targetTileMode !== 0) {
+  vlog("target tile mode:", TILE, targetTileMode);
+  target = resolveTileFallbackGeom(targetMon, TILE);
+  vlog("tile fallback geometry:", target.x, target.y, target.width, target.height);
+}
+
+function tileShortcutSequence(tile) {
+  switch (tile) {
+    case "left":
+      return ["Window Quick Tile Left"];
+    case "right":
+      return ["Window Quick Tile Right"];
+    case "top":
+      return ["Window Quick Tile Top"];
+    case "bottom":
+      return ["Window Quick Tile Bottom"];
+    case "top-left":
+      return ["Window Quick Tile Left", "Window Quick Tile Top"];
+    case "top-right":
+      return ["Window Quick Tile Right", "Window Quick Tile Top"];
+    case "bottom-left":
+      return ["Window Quick Tile Left", "Window Quick Tile Bottom"];
+    case "bottom-right":
+      return ["Window Quick Tile Right", "Window Quick Tile Bottom"];
+    default:
+      return [];
+  }
+}
+
+function invokeQuickTileShortcut(w, tile) {
+  var seq = tileShortcutSequence(tile);
+  if (seq.length === 0) return false;
+
+  try {
+    workspace.activeWindow = w;
+  } catch (e) { vlog("invokeQuickTileShortcut: failed to activate window", e); }
+
+  try {
+    for (var i = 0; i < seq.length; i++) {
+      callDBus("org.kde.kglobalaccel", "/component/kwin",
+               "org.kde.kglobalaccel.Component", "invokeShortcut", seq[i]);
+      vlog("invokeQuickTileShortcut: invoked", seq[i]);
+    }
+    return true;
+  } catch (e) {
+    vlog("invokeQuickTileShortcut: DBus invoke failed", e);
+    return false;
+  }
+}
+
+function tileLooksApplied(w, mon, tile) {
+  if (!w || !mon) return false;
+  var g = w.frameGeometry;
+  var mg = mon.geometry;
+  var cx = g.x + g.width / 2;
+  var cy = g.y + g.height / 2;
+  var midX = mg.x + mg.width / 2;
+  var midY = mg.y + mg.height / 2;
+
+  switch (tile) {
+    case "left":
+      return cx < midX;
+    case "right":
+      return cx > midX;
+    case "top":
+      return cy < midY;
+    case "bottom":
+      return cy > midY;
+    case "top-left":
+      return cx < midX && cy < midY;
+    case "top-right":
+      return cx > midX && cy < midY;
+    case "bottom-left":
+      return cx < midX && cy > midY;
+    case "bottom-right":
+      return cx > midX && cy > midY;
+    default:
+      return false;
+  }
+}
+
 function finish() {
   if (KEEP_MODE) {
     vlog("finish: keep mode active, not unloading");
@@ -1774,10 +2066,23 @@ function applyAndStick(w) {
 
   vlog("applyAndStick: window caption=", w.caption, "app=", w.desktopFileName, "id=", idOf(w));
 
+  if (MONITOR !== "") {
+    try { workspace.sendWindowToOutput(w, targetMon); } catch (e) {}
+  }
+
   if (FULLSCREEN) {
     w.fullScreen = true;
     vlog("applyAndStick: set fullscreen");
     notifySuccess(w);
+  } else if (targetTileMode !== 0) {
+    try {
+      w.quickTileMode = targetTileMode;
+      vlog("applyAndStick: set quickTileMode to", targetTileMode);
+    } catch (e) {
+      vlog("applyAndStick: set quickTileMode failed", e);
+      w.frameGeometry = target;
+      vlog("applyAndStick: fallback geometry to", target.x, target.y, target.width, target.height);
+    }
   } else {
     w.frameGeometry = target;
     vlog("applyAndStick: set geometry to", target.x, target.y, target.width, target.height);
@@ -1788,10 +2093,6 @@ function applyAndStick(w) {
     } else if (MAXIMIZED === "vertical") {
       try { w.setMaximize(true, false); } catch (e) {}
     }
-  }
-
-  if (MONITOR !== "") {
-    try { workspace.sendWindowToOutput(w, targetMon); } catch (e) {}
   }
 
   if (PINNED) {
@@ -1815,6 +2116,7 @@ function applyAndStick(w) {
 
   var triesLeft = 6;
   var notified = false;
+  var tileShortcutInvoked = false;
 
   function ensure() {
     if (!KEEP_MODE) {
@@ -1827,6 +2129,30 @@ function applyAndStick(w) {
     }
 
     if (FULLSCREEN) return;
+
+    if (targetTileMode !== 0) {
+      var tileOk = tileLooksApplied(w, targetMon, TILE);
+      var currentTileMode = 0;
+      try { currentTileMode = (w.quickTileMode || 0); } catch (e) {}
+      vlog("ensure(tile): current=", currentTileMode, "target=", targetTileMode, "ok=", tileOk, "triesLeft=", triesLeft);
+
+      if (tileOk) {
+        if (!notified) {
+          notified = true;
+          notifySuccess(w);
+        }
+        return;
+      }
+
+      if (!tileShortcutInvoked) {
+        tileShortcutInvoked = invokeQuickTileShortcut(w, TILE);
+        if (tileShortcutInvoked) return;
+      }
+
+      try { w.quickTileMode = targetTileMode; } catch (e) {}
+      w.frameGeometry = target;
+      return;
+    }
 
     var g = w.frameGeometry;
     var ok =
@@ -1842,9 +2168,8 @@ function applyAndStick(w) {
         notified = true;
         notifySuccess(w);
       }
-      if (!KEEP_MODE) {
-        finish();
-      }
+      // Some apps (notably terminals) can apply a late resize after map.
+      // Keep listening for a bit instead of unloading immediately.
       return;
     }
 
@@ -1886,7 +2211,7 @@ for (var i = 0; i < workspace.stackingOrder.length; i++) {
   }
 }
 `, cfg.ScriptName, string(scriptNameJSON), string(appJSON), string(matchJSON),
-		string(anchorJSON), string(monitorJSON), string(desktopJSON), cfg.Pinned,
+		string(anchorJSON), string(monitorJSON), string(desktopJSON), string(tileJSON), cfg.Pinned,
 		cfg.Minimized, cfg.KeepAbove, cfg.KeepBelow,
 		string(maximizedJSON), cfg.FullScreen,
 		cfg.Geom.X.Value, cfg.Geom.X.Percent,
