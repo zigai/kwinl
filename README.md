@@ -6,9 +6,11 @@ Declarative window placement for KWin: launch programs into predefined geometrie
 
 - Place: launch a single app and move/resize its newly created window to a specific geometry
 - Launch: apply a YAML/JSON layout to start and arrange multiple apps at once
+- Layouts: manage named layouts stored in `~/.config/kwinl`
 - Capture: snapshot current windows into a reusable YAML/JSON layout template
 - Validate: check a layout file for errors without launching anything
 - Cleanup: unload orphaned kwinl scripts from KWin
+- Completion: generate shell completions for bash/fish/powershell/zsh
 
 ## Requirements
 
@@ -82,10 +84,12 @@ Reads a template file containing multiple window presets and launches
 all specified applications with their configured geometries.
 
 Usage:
-  kwinl launch <config.yaml|config.json> [--timeout <duration>] [flags]
+  kwinl launch [config.yaml|config.yml|config.json|-] [--timeout <duration>] [flags]
 
 Examples:
   kwinl launch layout.yaml
+  kwinl launch -
+  cat layout.yaml | kwinl launch
   kwinl launch workspace.json --timeout 15s
 
 Flags:
@@ -94,6 +98,60 @@ Flags:
 
 Global Flags:
   -v, --verbose   verbose output
+
+Notes:
+  - Use `-` to read a template from stdin.
+  - With no positional argument, `launch` reads stdin when input is piped.
+```
+
+#### kwinl layouts list
+
+```
+Lists saved layouts from ~/.config/kwinl.
+
+Usage:
+  kwinl layouts list
+
+Behavior:
+  - Creates ~/.config/kwinl if it does not exist
+  - Prints one layout name per line
+  - Names are shown without extension
+  - If multiple files share the same basename, entries are disambiguated as:
+      work (work.yaml)
+      work (work.json)
+```
+
+#### kwinl layouts launch
+
+```
+Launches a saved layout by name from ~/.config/kwinl.
+
+Usage:
+  kwinl layouts launch <name> [--timeout <duration>]
+
+Examples:
+  kwinl layouts launch work
+  kwinl layouts launch work.yaml --timeout 12s
+
+Name resolution:
+  - Basename: "work" resolves to work.yaml, work.yml, or work.json
+  - Exact filename: "work.yaml" resolves that file directly
+  - If basename is ambiguous (e.g., both work.yaml and work.json exist), command fails and asks for exact filename
+```
+
+#### kwinl layouts remove
+
+```
+Removes a saved layout by name from ~/.config/kwinl.
+
+Usage:
+  kwinl layouts remove <name>
+
+Examples:
+  kwinl layouts remove work
+  kwinl layouts remove work.yaml
+
+Name resolution rules are the same as "kwinl layouts launch".
 ```
 
 #### kwinl capture
@@ -102,31 +160,59 @@ Global Flags:
 Captures the geometry/monitor/desktop of currently open windows and writes a YAML
 or JSON template (based on output file extension) suitable for use with "kwinl launch".
 
-By default, only windows with a non-empty desktopFileName are included. Use --include-unknown
-to also capture windows without desktopFileName (these will be matched by window title).
+By default, only windows with a known application ID are included. Use --include-unknown
+to also capture windows without an application ID (these will be matched by window title).
 
 Maximized and fullscreen states are captured and will be restored when launching.
 
 If --infer-command is enabled (default), each preset uses:
-  command: ["gtk-launch", "<desktopFileName>"]
+  command: ["gtk-launch", "<app-id>"]
 This is a best-effort launcher and may not reproduce multi-window apps exactly.
 
 Usage:
-  kwinl capture <layout.yaml|layout.yml|layout.json|-> [flags]
+  kwinl capture [layout.yaml|layout.yml|layout.json|-] [flags]
 
 Examples:
+  kwinl capture
+  kwinl capture -
   kwinl capture layout.yaml
   kwinl capture layout.json --include-unknown
   kwinl capture layout.yml --current-desktop
   kwinl capture layout.yaml --monitor DP-1
 
+Notes:
+  - If no output path is provided, output is written to stdout.
+  - Use `-` explicitly to force stdout output.
+
 Flags:
   -d, --current-desktop    only capture windows on current desktop
   -h, --help               help for capture
-  -u, --include-unknown    include windows without desktopFileName (matched by title)
+  -u, --include-unknown    include windows without desktopFileName/application ID (matched by title)
       --infer-command      infer a best-effort launcher command using gtk-launch (default true)
   -M, --monitor string     only capture windows on specified monitor
   -t, --timeout string     capture timeout (e.g., 2s, 500ms) (default "2s")
+
+Global Flags:
+  -v, --verbose   verbose output
+```
+
+#### kwinl completion
+
+```
+Generate the autocompletion script for kwinl for the specified shell.
+See each sub-command's help for details on how to use the generated script.
+
+Usage:
+  kwinl completion [command]
+
+Available Commands:
+  bash        Generate the autocompletion script for bash
+  fish        Generate the autocompletion script for fish
+  powershell  Generate the autocompletion script for powershell
+  zsh         Generate the autocompletion script for zsh
+
+Flags:
+  -h, --help   help for completion
 
 Global Flags:
   -v, --verbose   verbose output
