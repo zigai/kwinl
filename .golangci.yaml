@@ -6,44 +6,110 @@ run:
 formatters:
   enable:
     - goimports
+    - gofumpt
   settings:
     goimports:
       local-prefixes:
-        - github.com/zigai/zgod
+        - github.com/zigai/kwinl
 
 linters:
   enable:
+    - arangolint
     - asasalint
+    - asciicheck
+    - bidichk
     - bodyclose
+    - canonicalheader
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    - cyclop
+    - decorder
+    - dogsled
+    - dupl
+    - dupword
+    - durationcheck
+    - embeddedstructfieldcheck
+    - err113
     - errcheck
+    - errchkjson
     - errname
     - errorlint
     - exhaustive
+    - exhaustruct
     - exptostd
+    - fatcontext
+    - forcetypeassert
+    - funcorder
+    - ginkgolinter
+    - gocheckcompilerdirectives
     - gochecknoinits
     - gochecksumtype
+    - gocognit
     - goconst
     - gocritic
     - godoclint
     - godot
+    - gomoddirectives
+    - gomodguard
+    - goprintffuncname
     - gosec
+    - gosmopolitan
     - govet
+    - grouper
     - iface
+    - importas
+    - inamedparam
     - ineffassign
+    - interfacebloat
     - intrange
     - iotamixing
+    - loggercheck
+    - maintidx
     - makezero
     - mirror
+    - misspell
+    - mnd
     - modernize
+    - musttag
+    - nakedret
+    - nestif
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - noctx
     - nolintlint
+    - nonamedreturns
+    - nosprintfhostport
+    - perfsprint
+    - prealloc
+    - predeclared
+    - promlinter
+    - protogetter
+    - reassign
+    - recvcheck
+    - revive
     - rowserrcheck
+    - sloglint
+    - spancheck
     - sqlclosecheck
     - staticcheck
+    - tagalign
+    - tagliatelle
+    - testableexamples
+    - testifylint
+    - thelper
     - unconvert
     - unparam
+    - unqueryvet
     - unused
     - usestdlibvars
+    - usetesting
+    - wastedassign
     - whitespace
+    - wrapcheck
+    - wsl_v5
+    - zerologlint
 
   settings:
     errcheck:
@@ -56,6 +122,15 @@ linters:
 
     gochecksumtype:
       default-signifies-exhaustive: false
+
+    cyclop:
+      max-complexity: 12
+
+    gocognit:
+      min-complexity: 20
+
+    goconst:
+      min-occurrences: 8
 
     gocritic:
       settings:
@@ -73,7 +148,41 @@ linters:
       enable-all: true
       disable:
         - fieldalignment
-        - shadow
+      settings:
+        shadow:
+          strict: true
+
+    mnd:
+      ignored-numbers:
+        - "0600"
+        - "0644"
+        - "0700"
+        - "0750"
+
+    misspell:
+      locale: US
+
+    nakedret:
+      max-func-lines: 5
+
+    revive:
+      rules:
+        - name: error-naming
+        - name: if-return
+        - name: var-naming
+        - name: error-strings
+        - name: receiver-naming
+        - name: indent-error-flow
+        - name: superfluous-else
+        - name: modifies-parameter
+        - name: unreachable-code
+          disabled: true
+        - name: redefines-builtin-id
+          disabled: true
+
+    rowserrcheck:
+      packages:
+        - github.com/jmoiron/sqlx
 
     staticcheck:
       checks:
@@ -87,11 +196,6 @@ linters:
       require-explanation: true
       require-specific: true
 
-    rowserrcheck:
-      packages:
-        - github.com/jmoiron/sqlx
-
-    # your existing gosec policy overrides (kept)
     gosec:
       excludes:
         - G204 # exec.Command from $EDITOR is user-controlled by design
@@ -100,23 +204,31 @@ linters:
         - G304 # file path from variable
 
   exclusions:
-    warn-unused: true
-
-    # v2 replacement for your old `issues.exclude-use-default: false` behavior:
-    # make presets explicit (empty means "no preset exclusions").
+    warn-unused: false
     presets: []
 
     rules:
+      - text: "^Function name: generateJS,"
+        linters: [maintidx]
+
+      - path: "main\\.go"
+        linters: [mnd]
+
+      - text: 'shadow: declaration of "err" shadows declaration at'
+        linters: [govet]
+
+      - source: "cobra\\."
+        linters: [exhaustruct]
+
       - source: "TODO"
         linters: [godot]
 
       - path: "_test\\.go"
         linters:
           - bodyclose
+          - exhaustruct
           - errcheck
           - goconst
           - gosec
-
-      # If you enable revive later:
-      # - path: "^internal/"
-      #   linters: [revive]
+          - dogsled
+          - gocognit
