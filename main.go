@@ -395,7 +395,6 @@ var layoutsCmd = &cobra.Command{
 var layoutsListCmd = &cobra.Command{
 	Use:           "list",
 	Short:         "List saved layouts from ~/.config/kwinl",
-	Example:       `  kwinl layouts list`,
 	Args:          cobra.NoArgs,
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -408,8 +407,6 @@ var layoutsRemoveCmd = &cobra.Command{
 	Long: `Removes a layout from ~/.config/kwinl.
 
 Name can be a basename (without extension) or an explicit filename.`,
-	Example: `  kwinl layouts remove work
-  kwinl layouts remove work.yaml`,
 	Args:          cobra.ExactArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -422,8 +419,6 @@ var layoutsLaunchCmd = &cobra.Command{
 	Long: `Launches a layout from ~/.config/kwinl.
 
 Name can be a basename (without extension) or an explicit filename.`,
-	Example: `  kwinl layouts launch work
-  kwinl layouts launch work.yaml --timeout 12s`,
 	Args:          cobra.ExactArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -457,11 +452,9 @@ This is a best-effort launcher and may not reproduce multi-window apps exactly.`
 }
 
 var validateCmd = &cobra.Command{
-	Use:   "validate <layout-file>",
-	Short: "Validate a layout template without launching",
-	Long:  `Validates a YAML/JSON layout file for syntax errors, missing fields, and invalid values without launching any windows.`,
-	Example: `  kwinl validate layout.yaml
-  kwinl validate workspace.json`,
+	Use:           "validate <layout-file>",
+	Short:         "Validate a layout template without launching",
+	Long:          `Validates a YAML/JSON layout file for syntax errors, missing fields, and invalid values without launching any windows.`,
 	Args:          cobra.ExactArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -469,11 +462,9 @@ var validateCmd = &cobra.Command{
 }
 
 var cleanupCmd = &cobra.Command{
-	Use:   "cleanup",
-	Short: "Unload orphaned kwinl scripts",
-	Long:  `Discovers and unloads KWin scripts matching kwinl-* pattern.`,
-	Example: `  kwinl cleanup --dry-run
-  kwinl cleanup`,
+	Use:           "cleanup",
+	Short:         "Unload orphaned kwinl scripts",
+	Long:          `Discovers and unloads KWin scripts matching kwinl-* pattern.`,
 	Args:          cobra.NoArgs,
 	SilenceUsage:  true,
 	SilenceErrors: true,
