@@ -160,7 +160,8 @@ Name resolution rules are the same as "kwinl layouts launch".
 Captures the geometry/monitor/desktop of currently open windows and writes a YAML
 or JSON template (based on output file extension) suitable for use with "kwinl launch".
 
-By default, only windows with a known application ID are included. Use --include-unknown
+By default, only windows with a known application ID are included. App IDs are read from
+`desktopFileName` and fall back to `appId` when needed. Use --include-unknown
 to also capture windows without an application ID (these will be matched by window title).
 
 Maximized and fullscreen states are captured and will be restored when launching.
@@ -168,6 +169,9 @@ Maximized and fullscreen states are captured and will be restored when launching
 If --infer-command is enabled (default), each preset uses:
   command: ["gtk-launch", "<app-id>"]
 This is a best-effort launcher and may not reproduce multi-window apps exactly.
+
+If capture includes presets without `command`, it prints a warning. These presets must
+be edited before `kwinl launch` can use the file.
 
 Usage:
   kwinl capture [layout.yaml|layout.yml|layout.json|-] [flags]
@@ -187,7 +191,7 @@ Notes:
 Flags:
   -d, --current-desktop    only capture windows on current desktop
   -h, --help               help for capture
-  -u, --include-unknown    include windows without desktopFileName/application ID (matched by title)
+  -u, --include-unknown    include windows without desktopFileName/appId (matched by title; may require manual command)
       --infer-command      infer a best-effort launcher command using gtk-launch (default true)
   -M, --monitor string     only capture windows on specified monitor
   -t, --timeout string     capture timeout (e.g., 2s, 500ms) (default "2s")

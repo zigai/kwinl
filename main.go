@@ -431,14 +431,18 @@ var captureCmd = &cobra.Command{
 	Long: `Captures the geometry/monitor/desktop of currently open windows and writes a YAML
 or JSON template (based on output file extension) suitable for use with "kwinl launch".
 
-By default, only windows with a known application ID are included. Use --include-unknown
+By default, only windows with a known application ID are included. App IDs are read from
+desktopFileName and fall back to appId when needed. Use --include-unknown
 to also capture windows without an application ID (these will be matched by window title).
 
 Maximized and fullscreen states are captured and will be restored when launching.
 
 If --infer-command is enabled (default), each preset uses:
   command: ["gtk-launch", "<app-id>"]
-This is a best-effort launcher and may not reproduce multi-window apps exactly.`,
+This is a best-effort launcher and may not reproduce multi-window apps exactly.
+
+If a captured preset has no launch command, capture prints a warning and that preset
+must be edited before using "kwinl launch".`,
 	Example: `  kwinl capture
   kwinl capture -
   kwinl capture layout.yaml
@@ -500,7 +504,7 @@ func init() {
 
 	captureCmd.Flags().StringVarP(&captureTimeoutFlag, "timeout", "t", "2s", "capture timeout (e.g., 2s, 500ms)")
 	captureCmd.Flags().BoolVar(&captureInferCommandFlag, "infer-command", true, "infer a best-effort launcher command using gtk-launch")
-	captureCmd.Flags().BoolVarP(&captureIncludeUnknown, "include-unknown", "u", false, "include windows without desktopFileName (matched by title)")
+	captureCmd.Flags().BoolVarP(&captureIncludeUnknown, "include-unknown", "u", false, "include windows without desktopFileName/appId (matched by title; may require manual command)")
 	captureCmd.Flags().BoolVarP(&captureCurrentDesktop, "current-desktop", "d", false, "only capture windows on current desktop")
 	captureCmd.Flags().StringVarP(&captureMonitorFilter, "monitor", "M", "", "only capture windows on specified monitor")
 
@@ -1329,6 +1333,8 @@ func runCapture(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	warnCaptureNonLaunchablePresets(template)
+
 	data, err := marshalCaptureTemplate(template, format)
 	if err != nil {
 		return err
@@ -1745,6 +1751,30 @@ func buildTemplateFromCapturePayload(payload string) (Template, error) {
 	}
 
 	return Template{Version: version, Timeout: "", Presets: presets}, nil
+}
+
+func warnCaptureNonLaunchablePresets(template Template) {
+	missingCommandLabels := captureMissingCommandPresetLabels(template)
+	if len(missingCommandLabels) == 0 {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr,
+		"warning: captured %d preset(s) without command; \"kwinl launch\" will reject them: %s\n",
+		len(missingCommandLabels), strings.Join(missingCommandLabels, ", "))
+	fmt.Fprintln(os.Stderr,
+		"warning: add command manually or recapture with --infer-command and identifiable app IDs")
+}
+
+func captureMissingCommandPresetLabels(template Template) []string {
+	labels := make([]string, 0, len(template.Presets))
+	for i, p := range template.Presets {
+		if len(p.Command) == 0 {
+			labels = append(labels, presetLabel(i, p.Name))
+		}
+	}
+
+	return labels
 }
 
 func isSupportedLayoutExt(ext string) bool {
@@ -3174,6 +3204,19 @@ function normalizeApp(app) {
   return app;
 }
 
+function appFromWindow(w) {
+  var app = "";
+  try {
+    if (w.desktopFileName) app = "" + w.desktopFileName;
+  } catch (e) {}
+  if (!app) {
+    try {
+      if (w.appId) app = "" + w.appId;
+    } catch (e) {}
+  }
+  return normalizeApp(app);
+}
+
 function findOutputForRect(r) {
   var cx = Math.round(r.x + r.width / 2);
   var cy = Math.round(r.y + r.height / 2);
@@ -3245,8 +3288,7 @@ function capture() {
     var w = wins[i];
     if (!isManageable(w)) continue;
 
-    var app0 = w.desktopFileName ? ("" + w.desktopFileName) : "";
-    var app = normalizeApp(app0);
+    var app = appFromWindow(w);
     var caption = w.caption ? ("" + w.caption) : "";
 
     if (!app && !INCLUDE_UNKNOWN) continue;
