@@ -1625,6 +1625,7 @@ func marshalTemplateYAML(template Template) ([]byte, error) {
 	}
 
 	setCommandFlowStyle(&node)
+	normalizeCaptureNumericScalars(&node)
 
 	data, err := yaml.Marshal(&node)
 	if err != nil {
@@ -1649,6 +1650,74 @@ func setCommandFlowStyle(node *yaml.Node) {
 			setCommandFlowStyle(node.Alias)
 		}
 	}
+}
+
+var captureNumericScalarKeys = map[string]struct{}{
+	"x":       {},
+	"y":       {},
+	"width":   {},
+	"height":  {},
+	"monitor": {},
+	"desktop": {},
+}
+
+func normalizeCaptureNumericScalars(node *yaml.Node) {
+	switch node.Kind {
+	case yaml.DocumentNode:
+		normalizeCaptureNumericScalarsNodes(node.Content)
+	case yaml.SequenceNode:
+		normalizeCaptureNumericScalarsNodes(node.Content)
+	case yaml.MappingNode:
+		normalizeCaptureNumericScalarsMapping(node)
+	case yaml.ScalarNode:
+		return
+	case yaml.AliasNode:
+		if node.Alias != nil {
+			normalizeCaptureNumericScalars(node.Alias)
+		}
+	}
+}
+
+func normalizeCaptureNumericScalarsNodes(nodes []*yaml.Node) {
+	for _, c := range nodes {
+		normalizeCaptureNumericScalars(c)
+	}
+}
+
+func normalizeCaptureNumericScalarsMapping(node *yaml.Node) {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		k := node.Content[i]
+		v := node.Content[i+1]
+		coerceCaptureNumericScalar(k, v)
+		normalizeCaptureNumericScalars(v)
+	}
+}
+
+func coerceCaptureNumericScalar(key, value *yaml.Node) {
+	if key.Kind != yaml.ScalarNode || value.Kind != yaml.ScalarNode {
+		return
+	}
+
+	if !isCaptureNumericScalarKey(key.Value) {
+		return
+	}
+
+	if !isYAMLIntegerLikeString(value.Value) {
+		return
+	}
+
+	value.Tag = "!!int"
+	value.Style = 0
+}
+
+func isCaptureNumericScalarKey(v string) bool {
+	_, ok := captureNumericScalarKeys[v]
+	return ok
+}
+
+func isYAMLIntegerLikeString(v string) bool {
+	_, err := strconv.Atoi(strings.TrimSpace(v))
+	return err == nil
 }
 
 func setCommandFlowStyleNodes(nodes []*yaml.Node) {
