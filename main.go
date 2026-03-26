@@ -55,6 +55,7 @@ var (
 	errInvalidCommandExpectedStringArray         = errors.New("invalid command: expected string array")
 	errAlreadyOwned                              = errors.New("already owned")
 	errNoCapturePayloadReceived                  = errors.New("no payload received from KWin script")
+	errNoPlacementCallbackReceived               = errors.New("no placement callback received")
 	errSplitCommandUnfinishedEscape              = errors.New("unfinished escape at end of command")
 	errSplitCommandUnterminatedQuote             = errors.New("unterminated quote in command")
 	errInterruptedBySIGINT                       = errors.New("interrupted by SIGINT")
@@ -104,6 +105,61 @@ type PresetGeometry struct {
 	Y      string `json:"y"      yaml:"y"`
 	Width  string `json:"width"  yaml:"width"`
 	Height string `json:"height" yaml:"height"`
+}
+
+type presetGeometryValue string
+
+func (v *presetGeometryValue) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*v = ""
+		return nil
+	}
+
+	var asString string
+	if err := json.Unmarshal(data, &asString); err == nil {
+		*v = presetGeometryValue(asString)
+		return nil
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+
+	var asNumber json.Number
+	if err := decoder.Decode(&asNumber); err != nil {
+		return fmt.Errorf("decode preset geometry number: %w", err)
+	}
+
+	*v = presetGeometryValue(asNumber.String())
+
+	return nil
+}
+
+func (pg *PresetGeometry) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*pg = PresetGeometry{X: "", Y: "", Width: "", Height: ""}
+		return nil
+	}
+
+	type rawPresetGeometry struct {
+		X      presetGeometryValue `json:"x"`
+		Y      presetGeometryValue `json:"y"`
+		Width  presetGeometryValue `json:"width"`
+		Height presetGeometryValue `json:"height"`
+	}
+
+	var raw rawPresetGeometry
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("unmarshal preset geometry: %w", err)
+	}
+
+	*pg = PresetGeometry{
+		X:      string(raw.X),
+		Y:      string(raw.Y),
+		Width:  string(raw.Width),
+		Height: string(raw.Height),
+	}
+
+	return nil
 }
 
 type Preset struct {
@@ -280,8 +336,9 @@ func (e *CommandError) Error() string {
 }
 
 type ExitError struct {
-	Code int
-	Err  error
+	Code     int
+	Err      error
+	Reported bool
 }
 
 func (e *ExitError) Error() string {
@@ -294,6 +351,14 @@ func (e *ExitError) Error() string {
 
 func (e *ExitError) Unwrap() error {
 	return e.Err
+}
+
+func newExitError(code int, err error) *ExitError {
+	return &ExitError{Code: code, Err: err, Reported: false}
+}
+
+func reportedExitError(code int, err error) *ExitError {
+	return &ExitError{Code: code, Err: err, Reported: true}
 }
 
 type ScriptPathError struct {
@@ -484,7 +549,7 @@ func init() {
 
 	placeCmd.Flags().StringVarP(&placeAppFlag, "app", "a", "", "application ID to match")
 	placeCmd.Flags().StringVarP(&placeMatchFlag, "match", "m", "", "regex pattern to match window title")
-	placeCmd.Flags().StringVarP(&placeGeomFlag, "geom", "g", "", "geometry as x,y,w,h (values can be pixels or percentages like 50%)")
+	placeCmd.Flags().StringVarP(&placeGeomFlag, "geom", "g", "", "geometry as x,y,w,h (or w,h with --centered; values can be pixels or percentages like 50%)")
 	placeCmd.Flags().StringVar(&placeAnchorFlag, "anchor", "top-left", "anchor point for positioning")
 	placeCmd.Flags().StringVar(&placeMonitorFlag, "monitor", "", "target monitor (index like 0, 1 or name like DP-1)")
 	placeCmd.Flags().StringVar(&placeDesktopFlag, "desktop", "", "target virtual desktop (1-based index or name)")
@@ -539,9 +604,17 @@ func main() {
 	log.SetPrefix("kwinl: ")
 
 	if err := rootCmd.Execute(); err != nil {
-		log.Println(err)
+		if shouldLogError(err) {
+			log.Println(err)
+		}
+
 		os.Exit(exitCodeFor(err))
 	}
+}
+
+func shouldLogError(err error) bool {
+	var ee *ExitError
+	return !errors.As(err, &ee) || !ee.Reported
 }
 
 func exitCodeFor(err error) int {
@@ -607,24 +680,15 @@ func initPlaceCallback(conn *dbus.Conn) (*placeReceiver, string, error) {
 
 	reply, err := conn.RequestName(callbackService, dbus.NameFlagDoNotQueue)
 	if err != nil {
-		return nil, "", &ExitError{
-			Code: exitCodeDBusFailure,
-			Err:  fmt.Errorf("cannot acquire place D-Bus name %q: %w", callbackService, err),
-		}
+		return nil, "", newExitError(exitCodeDBusFailure, fmt.Errorf("cannot acquire place D-Bus name %q: %w", callbackService, err))
 	}
 
 	if reply != dbus.RequestNameReplyPrimaryOwner {
-		return nil, "", &ExitError{
-			Code: exitCodeDBusFailure,
-			Err:  fmt.Errorf("cannot acquire place D-Bus name %q: %w", callbackService, errAlreadyOwned),
-		}
+		return nil, "", newExitError(exitCodeDBusFailure, fmt.Errorf("cannot acquire place D-Bus name %q: %w", callbackService, errAlreadyOwned))
 	}
 
 	if err := conn.Export(recv, dbus.ObjectPath(placeObjectPath), placeIface); err != nil {
-		return nil, "", &ExitError{
-			Code: exitCodeDBusFailure,
-			Err:  fmt.Errorf("cannot export place D-Bus object: %w", err),
-		}
+		return nil, "", newExitError(exitCodeDBusFailure, fmt.Errorf("cannot export place D-Bus object: %w", err))
 	}
 
 	return recv, callbackService, nil
@@ -642,10 +706,7 @@ func loadPlaceScriptPath(conn *dbus.Conn, cfg Config) (string, error) {
 		return scriptPath, nil
 	}
 
-	return "", &ExitError{
-		Code: exitCodeLoadFailed,
-		Err:  fmt.Errorf("loadScript failed: %w", err),
-	}
+	return "", newExitError(exitCodeLoadFailed, fmt.Errorf("loadScript failed: %w", err))
 }
 
 func runPlace(cmd *cobra.Command, args []string) error {
@@ -660,10 +721,7 @@ func runPlace(cmd *cobra.Command, args []string) error {
 
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
-		return &ExitError{
-			Code: exitCodeDBusFailure,
-			Err:  fmt.Errorf("cannot connect to session D-Bus: %w", err),
-		}
+		return newExitError(exitCodeDBusFailure, fmt.Errorf("cannot connect to session D-Bus: %w", err))
 	}
 
 	defer closeDBusConnWarn(conn)
@@ -693,30 +751,49 @@ func runPlace(cmd *cobra.Command, args []string) error {
 	verbosef("running script")
 
 	if err := runScript(conn, cfg.ScriptName, scriptPath); err != nil {
-		return &ExitError{
-			Code: exitCodeLoadFailed,
-			Err:  err,
-		}
+		return newExitError(exitCodeLoadFailed, err)
 	}
 
 	verbosef("launching command: %v", cfg.Cmd)
 
 	cmdProc, err := launchCommand(cfg.Cmd)
 	if err != nil {
-		return &ExitError{
-			Code: exitCodeLaunchFailed,
-			Err:  fmt.Errorf("failed to launch command: %w", err),
+		return newExitError(exitCodeLaunchFailed, fmt.Errorf("failed to launch command: %w", err))
+	}
+
+	return waitForPlaceCommand(cfg.Timeout, recv.ch, cmdProc, placeKeepFlag)
+}
+
+func waitForPlaceCommand(timeout time.Duration, results <-chan placeResult, cmdProc *exec.Cmd, keepMode bool) error {
+	cmds := []*exec.Cmd{cmdProc}
+
+	waitAndCleanup := func() error {
+		if err := waitForPlacement(timeout, results, cmds); err != nil {
+			if shouldCleanupStartedCommands(err) {
+				cleanupStartedCommands(cmds)
+			}
+
+			return err
 		}
+
+		return nil
 	}
 
-	if placeKeepFlag {
+	if keepMode {
+		verbosef("keep mode: waiting for initial placement callback (timeout: %s)", timeout)
+
+		if err := waitAndCleanup(); err != nil {
+			return err
+		}
+
 		verbosef("keep mode: waiting indefinitely for SIGINT/SIGTERM")
-		return waitForSignal([]*exec.Cmd{cmdProc})
+
+		return waitForSignal(cmds)
 	}
 
-	verbosef("waiting for placement callback (timeout: %s)", cfg.Timeout)
+	verbosef("waiting for placement callback (timeout: %s)", timeout)
 
-	return waitForPlacement(cfg.Timeout, recv.ch, []*exec.Cmd{cmdProc})
+	return waitAndCleanup()
 }
 
 func parsePlaceCommandFlagValue() ([]string, error) {
@@ -777,7 +854,7 @@ func parseAndValidatePlace() (Config, error) {
 		return Config{}, err
 	}
 
-	geom, err := parseGeom(placeGeomFlag)
+	geom, err := parsePlaceGeom(placeGeomFlag, placeCenteredFlag)
 	if err != nil {
 		return Config{}, err
 	}
@@ -902,10 +979,7 @@ func runLaunchFromTemplate(template Template) error {
 
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
-		return &ExitError{
-			Code: exitCodeDBusFailure,
-			Err:  fmt.Errorf("cannot connect to session D-Bus: %w", err),
-		}
+		return newExitError(exitCodeDBusFailure, fmt.Errorf("cannot connect to session D-Bus: %w", err))
 	}
 
 	defer closeDBusConnWarn(conn)
@@ -920,36 +994,22 @@ func runLaunchFromTemplate(template Template) error {
 		cmdProcs    []*exec.Cmd
 	)
 
+	launchPhaseComplete := false
+
 	defer func() {
 		unloadAllScripts(conn, scriptNames)
+
+		if !launchPhaseComplete {
+			cleanupStartedCommands(cmdProcs)
+		}
 	}()
 
-	for i, preset := range template.Presets {
-		presetRun, err := buildLaunchPresetRun(i, preset, tempDir, callbackService)
-		if err != nil {
-			return err
-		}
-
-		if err := writeLaunchPresetJSFile(presetRun); err != nil {
-			return err
-		}
-
-		scriptPath, err := loadLaunchPresetScript(conn, presetRun)
-		if err != nil {
-			return err
-		}
-
-		scriptNames = append(scriptNames, presetRun.ScriptName)
-
-		cmdProc, err := runLaunchPresetScriptAndCommand(conn, presetRun, scriptPath)
-		if err != nil {
-			return err
-		}
-
-		cmdProcs = append(cmdProcs, cmdProc)
-
-		waitForLaunchPresetCallback(recv.ch, presetRun.Label, timeout)
+	scriptNames, cmdProcs, err = launchTemplatePresets(conn, recv.ch, template.Presets, tempDir, callbackService, timeout)
+	if err != nil {
+		return err
 	}
+
+	launchPhaseComplete = true
 
 	return waitAndCleanup(timeout, cmdProcs)
 }
@@ -965,21 +1025,57 @@ func writeLaunchPresetJSFile(presetRun launchPresetRun) error {
 
 func runLaunchPresetScriptAndCommand(conn *dbus.Conn, presetRun launchPresetRun, scriptPath string) (*exec.Cmd, error) {
 	if err := runScript(conn, presetRun.ScriptName, scriptPath); err != nil {
-		return nil, &ExitError{
-			Code: exitCodeLoadFailed,
-			Err:  err,
-		}
+		return nil, newExitError(exitCodeLoadFailed, err)
 	}
 
 	cmdProc, err := launchCommand(presetRun.Command)
 	if err != nil {
-		return nil, &ExitError{
-			Code: exitCodeLaunchFailed,
-			Err:  fmt.Errorf("failed to launch command for preset %s: %w", presetRun.Label, err),
-		}
+		return nil, newExitError(exitCodeLaunchFailed, fmt.Errorf("failed to launch command for preset %s: %w", presetRun.Label, err))
 	}
 
 	return cmdProc, nil
+}
+
+func launchTemplatePresets(
+	conn *dbus.Conn,
+	results <-chan placeResult,
+	presets []Preset,
+	tempDir, callbackService string,
+	timeout time.Duration,
+) ([]string, []*exec.Cmd, error) {
+	scriptNames := make([]string, 0, len(presets))
+	cmdProcs := make([]*exec.Cmd, 0, len(presets))
+
+	for i, preset := range presets {
+		presetRun, err := buildLaunchPresetRun(i, preset, tempDir, callbackService)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if err := writeLaunchPresetJSFile(presetRun); err != nil {
+			return nil, nil, err
+		}
+
+		scriptPath, err := loadLaunchPresetScript(conn, presetRun)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		scriptNames = append(scriptNames, presetRun.ScriptName)
+
+		cmdProc, err := runLaunchPresetScriptAndCommand(conn, presetRun, scriptPath)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		cmdProcs = append(cmdProcs, cmdProc)
+
+		if err := waitForLaunchPresetCallback(results, presetRun.Label, presetRun.ScriptName, timeout); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	return scriptNames, cmdProcs, nil
 }
 
 type launchPresetRun struct {
@@ -1029,6 +1125,7 @@ func buildLaunchPresetRun(index int, preset Preset, tempDir, callbackService str
 		Geom:            geom,
 		Verbose:         verboseFlag,
 		CallbackService: callbackService,
+		CallbackToken:   scriptName,
 		KeepMode:        false,
 	}
 
@@ -1074,24 +1171,15 @@ func initLaunchCallback(conn *dbus.Conn, presetCount int) (*placeReceiver, strin
 
 	reply, err := conn.RequestName(callbackService, dbus.NameFlagDoNotQueue)
 	if err != nil {
-		return nil, "", &ExitError{
-			Code: exitCodeDBusFailure,
-			Err:  fmt.Errorf("cannot acquire launch place D-Bus name %q: %w", callbackService, err),
-		}
+		return nil, "", newExitError(exitCodeDBusFailure, fmt.Errorf("cannot acquire launch place D-Bus name %q: %w", callbackService, err))
 	}
 
 	if reply != dbus.RequestNameReplyPrimaryOwner {
-		return nil, "", &ExitError{
-			Code: exitCodeDBusFailure,
-			Err:  fmt.Errorf("cannot acquire launch place D-Bus name %q: %w", callbackService, errAlreadyOwned),
-		}
+		return nil, "", newExitError(exitCodeDBusFailure, fmt.Errorf("cannot acquire launch place D-Bus name %q: %w", callbackService, errAlreadyOwned))
 	}
 
 	if err := conn.Export(recv, dbus.ObjectPath(placeObjectPath), placeIface); err != nil {
-		return nil, "", &ExitError{
-			Code: exitCodeDBusFailure,
-			Err:  fmt.Errorf("cannot export launch place D-Bus object: %w", err),
-		}
+		return nil, "", newExitError(exitCodeDBusFailure, fmt.Errorf("cannot export launch place D-Bus object: %w", err))
 	}
 
 	return recv, callbackService, nil
@@ -1109,13 +1197,10 @@ func loadLaunchPresetScript(conn *dbus.Conn, preset launchPresetRun) (string, er
 		return scriptPath, nil
 	}
 
-	return "", &ExitError{
-		Code: exitCodeLoadFailed,
-		Err:  fmt.Errorf("loadScript failed for preset %s: %w", preset.Label, err),
-	}
+	return "", newExitError(exitCodeLoadFailed, fmt.Errorf("loadScript failed for preset %s: %w", preset.Label, err))
 }
 
-func waitForLaunchPresetCallback(ch <-chan placeResult, label string, timeout time.Duration) {
+func nextLaunchPresetCallback(ch <-chan placeResult, callbackToken string, timeout time.Duration) (placeResult, bool) {
 	perPresetWait := timeout
 
 	const maxPerPresetWait = 2 * time.Second
@@ -1134,14 +1219,75 @@ func waitForLaunchPresetCallback(ch <-chan placeResult, label string, timeout ti
 		}
 	}()
 
-	select {
-	case result := <-ch:
+	for {
+		select {
+		case result := <-ch:
+			if result.CallbackToken != callbackToken {
+				verbosef("launch preset callback token mismatch: expected=%s got=%s windowID=%s caption=%s geometry=%s",
+					callbackToken, result.CallbackToken, result.WindowID, result.Caption, result.Geometry)
+
+				continue
+			}
+
+			return result, true
+		case <-timer.C:
+			return placeResult{
+				CallbackToken: "",
+				Success:       false,
+				WindowID:      "",
+				Caption:       "",
+				Geometry:      "",
+				Message:       "",
+			}, false
+		}
+	}
+}
+
+func placementCallbackError(result placeResult) error {
+	if result.Success {
+		return nil
+	}
+
+	message := strings.TrimSpace(result.Message)
+	if message == "" {
+		message = "placement failed"
+	}
+
+	return &ValidationError{
+		Field:   "target",
+		Value:   "",
+		Message: message,
+	}
+}
+
+func placementTimeoutError(timeout time.Duration) error {
+	return newExitError(exitCodeLoadFailed, fmt.Errorf("placement timed out after %s (%w)", timeout, errNoPlacementCallbackReceived))
+}
+
+func waitForLaunchPresetCallback(ch <-chan placeResult, label, callbackToken string, timeout time.Duration) error {
+	result, ok := nextLaunchPresetCallback(ch, callbackToken, timeout)
+	if ok {
 		verbosef("launch preset %s placement callback: success=%v windowID=%s caption=%s geometry=%s",
 			label, result.Success, result.WindowID, result.Caption, result.Geometry)
-	case <-timer.C:
-		verbosef("launch preset %s placement callback timeout after %s; continuing",
-			label, perPresetWait)
+
+		if err := placementCallbackError(result); err != nil {
+			return presetErr(label, err)
+		}
+
+		return nil
 	}
+
+	perPresetWait := timeout
+
+	const maxPerPresetWait = 2 * time.Second
+	if perPresetWait <= 0 || perPresetWait > maxPerPresetWait {
+		perPresetWait = maxPerPresetWait
+	}
+
+	verbosef("launch preset %s placement callback timeout after %s; continuing",
+		label, perPresetWait)
+
+	return presetErr(label, placementTimeoutError(perPresetWait))
 }
 
 func parseLaunchTemplateInput(args []string, stdin io.Reader) (Template, error) {
@@ -1257,16 +1403,25 @@ type placeReceiver struct {
 }
 
 type placeResult struct {
-	Success  bool
-	WindowID string
-	Caption  string
-	Geometry string
+	CallbackToken string
+	Success       bool
+	WindowID      string
+	Caption       string
+	Geometry      string
+	Message       string
 }
 
 //nolint:unparam // D-Bus method signature requires *dbus.Error return; always nil.
-func (r *placeReceiver) Placed(success bool, windowID, caption, geom string) (bool, *dbus.Error) {
+func (r *placeReceiver) Placed(callbackToken string, success bool, windowID, caption, geom, message string) (bool, *dbus.Error) {
 	select {
-	case r.ch <- placeResult{success, windowID, caption, geom}:
+	case r.ch <- placeResult{
+		CallbackToken: callbackToken,
+		Success:       success,
+		WindowID:      windowID,
+		Caption:       caption,
+		Geometry:      geom,
+		Message:       message,
+	}:
 	default:
 	}
 
@@ -1297,10 +1452,7 @@ func runCapture(cmd *cobra.Command, args []string) error {
 
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
-		return &ExitError{
-			Code: exitCodeDBusFailure,
-			Err:  fmt.Errorf("cannot connect to session D-Bus: %w", err),
-		}
+		return newExitError(exitCodeDBusFailure, fmt.Errorf("cannot connect to session D-Bus: %w", err))
 	}
 
 	defer func() {
@@ -1327,10 +1479,7 @@ func runCapture(cmd *cobra.Command, args []string) error {
 
 	template, err := buildTemplateFromCapturePayload(payload)
 	if err != nil {
-		return &ExitError{
-			Code: exitCodeLoadFailed,
-			Err:  fmt.Errorf("invalid capture payload: %w", err),
-		}
+		return newExitError(exitCodeLoadFailed, fmt.Errorf("invalid capture payload: %w", err))
 	}
 
 	warnCaptureNonLaunchablePresets(template)
@@ -1349,24 +1498,15 @@ func initCaptureCallback(conn *dbus.Conn) (*captureReceiver, string, error) {
 
 	reply, err := conn.RequestName(serviceName, dbus.NameFlagDoNotQueue)
 	if err != nil {
-		return nil, "", &ExitError{
-			Code: exitCodeDBusFailure,
-			Err:  fmt.Errorf("cannot acquire capture D-Bus name %q: %w", serviceName, err),
-		}
+		return nil, "", newExitError(exitCodeDBusFailure, fmt.Errorf("cannot acquire capture D-Bus name %q: %w", serviceName, err))
 	}
 
 	if reply != dbus.RequestNameReplyPrimaryOwner {
-		return nil, "", &ExitError{
-			Code: exitCodeDBusFailure,
-			Err:  fmt.Errorf("cannot acquire capture D-Bus name %q: %w", serviceName, errAlreadyOwned),
-		}
+		return nil, "", newExitError(exitCodeDBusFailure, fmt.Errorf("cannot acquire capture D-Bus name %q: %w", serviceName, errAlreadyOwned))
 	}
 
 	if err := conn.Export(recv, dbus.ObjectPath(captureObjectPath), captureIface); err != nil {
-		return nil, "", &ExitError{
-			Code: exitCodeDBusFailure,
-			Err:  fmt.Errorf("cannot export capture D-Bus object: %w", err),
-		}
+		return nil, "", newExitError(exitCodeDBusFailure, fmt.Errorf("cannot export capture D-Bus object: %w", err))
 	}
 
 	return recv, serviceName, nil
@@ -1393,18 +1533,12 @@ func startCaptureScript(conn *dbus.Conn, tempDir, serviceName string) (string, e
 		if errors.As(err, &warning) {
 			log.Printf("warning: %v", warning)
 		} else {
-			return "", &ExitError{
-				Code: exitCodeLoadFailed,
-				Err:  fmt.Errorf("loadScript failed: %w", err),
-			}
+			return "", newExitError(exitCodeLoadFailed, fmt.Errorf("loadScript failed: %w", err))
 		}
 	}
 
 	if err := runScript(conn, scriptName, scriptPath); err != nil {
-		return "", &ExitError{
-			Code: exitCodeLoadFailed,
-			Err:  err,
-		}
+		return "", newExitError(exitCodeLoadFailed, err)
 	}
 
 	return scriptName, nil
@@ -1418,10 +1552,7 @@ func waitForCapturePayload(ch <-chan string, timeout time.Duration) (string, err
 	case payload := <-ch:
 		return payload, nil
 	case <-timer.C:
-		return "", &ExitError{
-			Code: exitCodeLoadFailed,
-			Err:  fmt.Errorf("capture timed out after %s (%w)", timeout, errNoCapturePayloadReceived),
-		}
+		return "", newExitError(exitCodeLoadFailed, fmt.Errorf("capture timed out after %s (%w)", timeout, errNoCapturePayloadReceived))
 	}
 }
 
@@ -1506,10 +1637,10 @@ func runValidate(cmd *cobra.Command, args []string) error {
 }
 
 func formatValidationFailure(path string, err error) error {
-	fmt.Printf("✗ %s validation failed:\n", filepath.Base(path))
-	fmt.Printf("  %v\n", err)
+	fmt.Fprintf(os.Stderr, "✗ %s validation failed:\n", filepath.Base(path))
+	fmt.Fprintf(os.Stderr, "  %v\n", err)
 
-	return &ExitError{Code: exitCodeUsage, Err: err}
+	return reportedExitError(exitCodeUsage, err)
 }
 
 func runCleanup(cmd *cobra.Command, args []string) error {
@@ -1517,10 +1648,7 @@ func runCleanup(cmd *cobra.Command, args []string) error {
 
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
-		return &ExitError{
-			Code: exitCodeDBusFailure,
-			Err:  fmt.Errorf("cannot connect to session D-Bus: %w", err),
-		}
+		return newExitError(exitCodeDBusFailure, fmt.Errorf("cannot connect to session D-Bus: %w", err))
 	}
 
 	defer func() {
@@ -1530,8 +1658,10 @@ func runCleanup(cmd *cobra.Command, args []string) error {
 	}()
 
 	scripts, err := discoverKwinLayoutScripts(conn)
+
+	scripts, err = validateCleanupDiscovery(scripts, err)
 	if err != nil {
-		verbosef("introspection failed: %v", err)
+		return err
 	}
 
 	if len(scripts) == 0 {
@@ -1564,6 +1694,14 @@ func runCleanup(cmd *cobra.Command, args []string) error {
 	fmt.Printf("total: %d script(s)\n", count)
 
 	return nil
+}
+
+func validateCleanupDiscovery(scripts []string, err error) ([]string, error) {
+	if err == nil {
+		return scripts, nil
+	}
+
+	return nil, newExitError(exitCodeDBusFailure, err)
 }
 
 func discoverKwinLayoutScripts(conn *dbus.Conn) ([]string, error) {
@@ -1653,12 +1791,10 @@ func setCommandFlowStyle(node *yaml.Node) {
 }
 
 var captureNumericScalarKeys = map[string]struct{}{
-	"x":       {},
-	"y":       {},
-	"width":   {},
-	"height":  {},
-	"monitor": {},
-	"desktop": {},
+	"x":      {},
+	"y":      {},
+	"width":  {},
+	"height": {},
 }
 
 func normalizeCaptureNumericScalars(node *yaml.Node) {
@@ -2133,11 +2269,11 @@ func validatePreset(index int, p Preset) error {
 }
 
 func validatePresetIdentity(label string, p Preset) error {
-	if p.App == "" && p.Match == "" {
+	if strings.TrimSpace(p.App) == "" && strings.TrimSpace(p.Match) == "" {
 		return presetErr(label, &ValidationError{Field: "app/match", Value: "", Message: "either app or match is required"})
 	}
 
-	if p.Match != "" {
+	if strings.TrimSpace(p.Match) != "" {
 		if _, err := regexp.Compile(p.Match); err != nil {
 			return presetErr(label, &ValidationError{Field: "match", Value: p.Match, Message: "invalid regex: " + err.Error()})
 		}
@@ -2145,6 +2281,10 @@ func validatePresetIdentity(label string, p Preset) error {
 
 	if len(p.Command) == 0 {
 		return presetErr(label, &ValidationError{Field: "command", Value: "", Message: "required field is missing"})
+	}
+
+	if strings.TrimSpace(p.Command[0]) == "" {
+		return presetErr(label, &ValidationError{Field: "command", Value: "", Message: "executable must not be empty"})
 	}
 
 	return nil
@@ -2182,12 +2322,17 @@ func validatePresetTile(label string, p Preset) (string, error) {
 func validatePresetGeometryRequirements(label string, p Preset, tile string) (bool, error) {
 	geomProvided := hasAnyPresetGeometry(p.Geometry)
 
-	geomComplete := hasAllPresetGeometry(p.Geometry)
+	geomComplete := hasRequiredPresetGeometry(p.Geometry, p.Centered)
 	if geomProvided && !geomComplete {
+		message := "x, y, width, height must all be set together"
+		if p.Centered {
+			message = "width and height must both be set when centered is true"
+		}
+
 		return false, presetErr(label, &ValidationError{
 			Field:   "geometry",
 			Value:   "",
-			Message: "x, y, width, height must all be set together",
+			Message: message,
 		})
 	}
 
@@ -2271,6 +2416,15 @@ func hasAllPresetGeometry(pg PresetGeometry) bool {
 		strings.TrimSpace(pg.Y) != "" &&
 		strings.TrimSpace(pg.Width) != "" &&
 		strings.TrimSpace(pg.Height) != ""
+}
+
+func hasRequiredPresetGeometry(pg PresetGeometry, centered bool) bool {
+	if centered {
+		return strings.TrimSpace(pg.Width) != "" &&
+			strings.TrimSpace(pg.Height) != ""
+	}
+
+	return hasAllPresetGeometry(pg)
 }
 
 func determineLaunchTimeout(t Template) (time.Duration, error) {
@@ -2398,12 +2552,42 @@ func parseGeom(s string) (ParsedGeometry, error) {
 		}
 	}
 
-	x, err := parseGeomValue(parts[0], "x", false)
+	return parseGeomParts(parts, false)
+}
+
+func parsePlaceGeom(s string, centered bool) (ParsedGeometry, error) {
+	if !centered {
+		return parseGeom(s)
+	}
+
+	parts := strings.Split(s, ",")
+	if len(parts) == 2 {
+		parts = []string{"", "", parts[0], parts[1]}
+	}
+
+	if len(parts) != 4 {
+		message := "expected x,y,w,h (4 comma-separated values)"
+		if centered {
+			message = "expected w,h (2 comma-separated values) or x,y,w,h (4 comma-separated values)"
+		}
+
+		return ParsedGeometry{}, &ValidationError{
+			Field:   "geom",
+			Value:   s,
+			Message: message,
+		}
+	}
+
+	return parseGeomParts(parts, centered)
+}
+
+func parseGeomParts(parts []string, allowEmptyXY bool) (ParsedGeometry, error) {
+	x, err := parseGeomValue(parts[0], "x", allowEmptyXY)
 	if err != nil {
 		return ParsedGeometry{}, err
 	}
 
-	y, err := parseGeomValue(parts[1], "y", false)
+	y, err := parseGeomValue(parts[1], "y", allowEmptyXY)
 	if err != nil {
 		return ParsedGeometry{}, err
 	}
@@ -2479,6 +2663,7 @@ func writeJSFile(cfg Config, callbackService string, keepMode bool) error {
 		Geom:            cfg.Geom,
 		Verbose:         verboseFlag,
 		CallbackService: callbackService,
+		CallbackToken:   cfg.ScriptName,
 		KeepMode:        keepMode,
 	}
 	js := generateJS(jsCfg)
@@ -2496,15 +2681,17 @@ type splitCommandParser struct {
 	inSingle bool
 	inDouble bool
 	escaped  bool
+	inArg    bool
 }
 
 func (p *splitCommandParser) flush() {
-	if p.buf.Len() == 0 {
+	if !p.inArg && p.buf.Len() == 0 {
 		return
 	}
 
 	p.args = append(p.args, p.buf.String())
 	p.buf.Reset()
+	p.inArg = false
 }
 
 func (p *splitCommandParser) consumeEscaped(r rune) bool {
@@ -2532,9 +2719,13 @@ func (p *splitCommandParser) toggleQuote(r rune) bool {
 	switch {
 	case r == '\'' && !p.inDouble:
 		p.inSingle = !p.inSingle
+		p.inArg = true
+
 		return true
 	case r == '"' && !p.inSingle:
 		p.inDouble = !p.inDouble
+		p.inArg = true
+
 		return true
 	default:
 		return false
@@ -2563,6 +2754,7 @@ func (p *splitCommandParser) consume(r rune) {
 		return
 	}
 
+	p.inArg = true
 	p.buf.WriteRune(r)
 }
 
@@ -2603,6 +2795,7 @@ type jsPlacementConfig struct {
 	Geom            ParsedGeometry
 	Verbose         bool
 	CallbackService string
+	CallbackToken   string
 	KeepMode        bool
 }
 
@@ -2625,6 +2818,7 @@ func generateJS(cfg jsPlacementConfig) string {
 	tileJSON := mustJSONString(cfg.Tile)
 	maximizedJSON := mustJSONString(cfg.Maximized)
 	callbackServiceJSON := mustJSONString(cfg.CallbackService)
+	callbackTokenJSON := mustJSONString(cfg.CallbackToken)
 
 	return fmt.Sprintf(`// Auto-generated: %s
 var SCRIPT_NAME = %s;
@@ -2646,6 +2840,7 @@ var GEOM_W = {value: %d, percent: %v};
 var GEOM_H = {value: %d, percent: %v};
 var VERBOSE = %v;
 var CALLBACK_SERVICE = %s;
+var CALLBACK_TOKEN = %s;
 var CALLBACK_PATH = "/io/github/kwinl/Place";
 var CALLBACK_IFACE = "io.github.kwinl.Place";
 var KEEP_MODE = %v;
@@ -2800,11 +2995,7 @@ function findMonitor(id) {
   if (names.length > 0) {
     vlog("findMonitor: no match for", idStr, "available=", names.join(","));
   }
-  if (screens.length > 0) {
-    vlog("findMonitor: falling back to first output index 0");
-    return screens[0];
-  }
-  return workspace.activeScreen;
+  return null;
 }
 
 function findDesktop(id) {
@@ -2878,10 +3069,26 @@ function notifySuccess(w) {
   try {
     var g = w.frameGeometry;
     callDBus(CALLBACK_SERVICE, CALLBACK_PATH, CALLBACK_IFACE, "Placed",
-             true, "" + w.internalId, "" + w.caption,
-             g.x + "," + g.y + "," + g.width + "," + g.height);
+             CALLBACK_TOKEN, true, "" + w.internalId, "" + w.caption,
+             g.x + "," + g.y + "," + g.width + "," + g.height, "");
     vlog("notifySuccess: sent callback");
   } catch (e) { vlog("notifySuccess: error", e); }
+}
+
+function notifyFailure(reason) {
+  if (!CALLBACK_SERVICE) return;
+  try {
+    callDBus(CALLBACK_SERVICE, CALLBACK_PATH, CALLBACK_IFACE, "Placed",
+             CALLBACK_TOKEN, false, "", "", "", "" + reason);
+    vlog("notifyFailure: sent callback reason=", reason);
+  } catch (e) { vlog("notifyFailure: error", e); }
+}
+
+function abortPlacement(reason) {
+  notifyFailure(reason);
+  try {
+    callDBus("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript", SCRIPT_NAME);
+  } catch (e) { vlog("abortPlacement: unload error", e); }
 }
 
 var baseline = {};
@@ -2895,8 +3102,22 @@ for (var i = 0; i < workspace.stackingOrder.length; i++) {
 
 var handled = false;
 var targetMon = findMonitor(MONITOR);
-var target = resolveGeom(targetMon);
-vlog("target geometry:", target.x, target.y, target.width, target.height);
+var targetDesk = PINNED ? null : findDesktop(DESKTOP);
+var targetResolutionError = "";
+if (MONITOR !== "" && !targetMon) {
+  targetResolutionError = "invalid monitor target: " + MONITOR;
+} else if (!PINNED && DESKTOP !== "" && !targetDesk) {
+  targetResolutionError = "invalid desktop target: " + DESKTOP;
+}
+
+var target = null;
+if (targetResolutionError === "") {
+  target = resolveGeom(targetMon);
+  vlog("target geometry:", target.x, target.y, target.width, target.height);
+} else {
+  vlog("target resolution failed:", targetResolutionError);
+  abortPlacement(targetResolutionError);
+}
 
 function resolveTileFallbackGeom(mon, tile) {
   var mg = mon.geometry;
@@ -3051,6 +3272,7 @@ function finish() {
 }
 
 function applyAndStick(w) {
+  if (targetResolutionError !== "") return;
   if (handled && !KEEP_MODE) return;
   handled = true;
 
@@ -3101,9 +3323,8 @@ function applyAndStick(w) {
   if (PINNED) {
     try { w.desktops = workspace.desktops; } catch (e) {}
   } else {
-    var desk = findDesktop(DESKTOP);
-    if (desk) {
-      try { w.desktops = [desk]; } catch (e) {}
+    if (targetDesk) {
+      try { w.desktops = [targetDesk]; } catch (e) {}
     }
   }
 
@@ -3227,7 +3448,7 @@ for (var i = 0; i < workspace.stackingOrder.length; i++) {
     break;
   }
 }
-`, cfg.ScriptName, scriptNameJSON, appJSON, matchJSON,
+	`, cfg.ScriptName, scriptNameJSON, appJSON, matchJSON,
 		anchorJSON, monitorJSON, desktopJSON, tileJSON, cfg.Pinned,
 		cfg.Minimized, cfg.KeepAbove, cfg.KeepBelow,
 		maximizedJSON, cfg.FullScreen,
@@ -3235,7 +3456,7 @@ for (var i = 0; i < workspace.stackingOrder.length; i++) {
 		cfg.Geom.Y.Value, cfg.Geom.Y.Percent,
 		cfg.Geom.W.Value, cfg.Geom.W.Percent,
 		cfg.Geom.H.Value, cfg.Geom.H.Percent,
-		cfg.Verbose, callbackServiceJSON, cfg.KeepMode)
+		cfg.Verbose, callbackServiceJSON, callbackTokenJSON, cfg.KeepMode)
 }
 
 func generateCaptureJS(scriptName, serviceName string, opts captureOptions) string {
@@ -3549,7 +3770,21 @@ func launchCommand(cmdSlice []string) (*exec.Cmd, error) {
 		return nil, fmt.Errorf("start command %q: %w", expanded[0], err)
 	}
 
+	reapCommand(cmd)
+
 	return cmd, nil
+}
+
+func reapCommand(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			verbosef("command %q exited: %v", cmd.Path, err)
+		}
+	}()
 }
 
 func filteredEnv(env []string, drop ...string) []string {
@@ -3616,11 +3851,11 @@ func waitAndCleanup(timeout time.Duration, cmds []*exec.Cmd) error {
 
 		switch sig {
 		case syscall.SIGINT:
-			return &ExitError{Code: exitCodeInterrupted, Err: errInterruptedBySIGINT}
+			return newExitError(exitCodeInterrupted, errInterruptedBySIGINT)
 		case syscall.SIGTERM:
-			return &ExitError{Code: exitCodeTerminated, Err: errInterruptedBySIGTERM}
+			return newExitError(exitCodeTerminated, errInterruptedBySIGTERM)
 		default:
-			return &ExitError{Code: exitCodeTerminated, Err: fmt.Errorf("%w %v", errInterruptedBySignal, sig)}
+			return newExitError(exitCodeTerminated, fmt.Errorf("%w %v", errInterruptedBySignal, sig))
 		}
 	}
 }
@@ -3640,6 +3875,28 @@ func signalProcessGroups(cmds []*exec.Cmd, sig os.Signal) {
 	}
 }
 
+func cleanupStartedCommands(cmds []*exec.Cmd) {
+	if len(cmds) == 0 {
+		return
+	}
+
+	verbosef("partial launch failure: terminating %d started command(s)", len(cmds))
+	signalProcessGroups(cmds, syscall.SIGTERM)
+}
+
+func shouldCleanupStartedCommands(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var ee *ExitError
+	if errors.As(err, &ee) {
+		return ee.Code != exitCodeInterrupted && ee.Code != exitCodeTerminated
+	}
+
+	return true
+}
+
 func waitForPlacement(timeout time.Duration, resultCh <-chan placeResult, cmds []*exec.Cmd) error {
 	sigCh := make(chan os.Signal, 1)
 
@@ -3654,20 +3911,20 @@ func waitForPlacement(timeout time.Duration, resultCh <-chan placeResult, cmds [
 		verbosef("placement callback received: success=%v windowID=%s caption=%s geometry=%s",
 			result.Success, result.WindowID, result.Caption, result.Geometry)
 
-		return nil
+		return placementCallbackError(result)
 	case <-timer.C:
 		verbosef("timeout reached, placement may have failed")
-		return nil
+		return placementTimeoutError(timeout)
 	case sig := <-sigCh:
 		signalProcessGroups(cmds, sig)
 
 		switch sig {
 		case syscall.SIGINT:
-			return &ExitError{Code: exitCodeInterrupted, Err: errInterruptedBySIGINT}
+			return newExitError(exitCodeInterrupted, errInterruptedBySIGINT)
 		case syscall.SIGTERM:
-			return &ExitError{Code: exitCodeTerminated, Err: errInterruptedBySIGTERM}
+			return newExitError(exitCodeTerminated, errInterruptedBySIGTERM)
 		default:
-			return &ExitError{Code: exitCodeTerminated, Err: fmt.Errorf("%w %v", errInterruptedBySignal, sig)}
+			return newExitError(exitCodeTerminated, fmt.Errorf("%w %v", errInterruptedBySignal, sig))
 		}
 	}
 }
@@ -3684,10 +3941,10 @@ func waitForSignal(cmds []*exec.Cmd) error {
 
 	switch sig {
 	case syscall.SIGINT:
-		return &ExitError{Code: exitCodeInterrupted, Err: errInterruptedBySIGINT}
+		return newExitError(exitCodeInterrupted, errInterruptedBySIGINT)
 	case syscall.SIGTERM:
-		return &ExitError{Code: exitCodeTerminated, Err: errInterruptedBySIGTERM}
+		return newExitError(exitCodeTerminated, errInterruptedBySIGTERM)
 	default:
-		return &ExitError{Code: exitCodeTerminated, Err: fmt.Errorf("%w %v", errInterruptedBySignal, sig)}
+		return newExitError(exitCodeTerminated, fmt.Errorf("%w %v", errInterruptedBySignal, sig))
 	}
 }

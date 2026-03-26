@@ -51,7 +51,7 @@ Examples:
   kwinl place --app org.kde.konsole --geom 0,0,50%,100% --anchor top-left --cmd "konsole"
   kwinl place --match "^Firefox.*Private" --geom 0,0,50%,100% --cmd "firefox --private-window"
   kwinl place --app firefox --match "YouTube" --geom 0,0,50%,100% --cmd firefox
-  kwinl place --app org.kde.konsole --geom 0,0,800,600 --centered --cmd konsole
+  kwinl place --app org.kde.konsole --geom 800,600 --centered --cmd konsole
 
 Flags:
       --anchor string    anchor point for positioning (default "top-left")
@@ -59,7 +59,7 @@ Flags:
       --centered         center window on monitor (sets x=50%, y=50%, anchor=center)
   -c, --cmd string       command to run (quoted string)
       --desktop string   target virtual desktop (1-based index or name)
-  -g, --geom string      geometry as x,y,w,h (values can be pixels or percentages like 50%)
+  -g, --geom string      geometry as x,y,w,h (or w,h with --centered; values can be pixels or percentages like 50%)
   -h, --help             help for place
       --keep             keep script active and re-enforce geometry
       --keep-above       keep window above others
