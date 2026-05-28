@@ -2277,7 +2277,11 @@ func validatePreset(index int, p Preset) error {
 		return err
 	}
 
-	return validatePresetMaximized(label, p)
+	if err := validatePresetMaximized(label, p); err != nil {
+		return err
+	}
+
+	return validatePresetStateConflicts(label, p)
 }
 
 func validatePresetIdentity(label string, p Preset) error {
@@ -2398,6 +2402,26 @@ func validatePresetMaximized(label string, p Preset) error {
 		Value:   p.Maximized,
 		Message: "valid values: horizontal, vertical, both (or empty)",
 	})
+}
+
+func validatePresetStateConflicts(label string, p Preset) error {
+	if p.KeepAbove && p.KeepBelow {
+		return presetErr(label, &ValidationError{
+			Field:   "keepAbove/keepBelow",
+			Value:   "",
+			Message: "keepAbove and keepBelow cannot both be true",
+		})
+	}
+
+	if p.FullScreen && p.Maximized != "" {
+		return presetErr(label, &ValidationError{
+			Field:   "fullscreen/maximized",
+			Value:   "",
+			Message: "fullscreen cannot be combined with maximized",
+		})
+	}
+
+	return nil
 }
 
 func presetErr(label string, err error) error {
