@@ -441,6 +441,28 @@ func TestParseAndValidatePlaceAllowsCenteredGeomWithoutXY(t *testing.T) {
 	}
 }
 
+func TestParseAndValidatePlaceRejectsConflictingKeepStackingFlags(t *testing.T) {
+	restore := savePlaceFlags()
+	defer restore()
+
+	placeAppFlag = "org.kde.konsole"
+	placeGeomFlag = "0,0,800,600"
+	placeAnchorFlag = "top-left"
+	placeTimeoutFlag = "8s"
+	placeCommandFlag = "echo hi"
+	placeKeepAboveFlag = true
+	placeKeepBelowFlag = true
+
+	_, err := parseAndValidatePlace()
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+
+	if !strings.Contains(err.Error(), "--keep-above and --keep-below cannot both be set") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidateTemplateAllowsEmptyNonExecutableCommandArg(t *testing.T) {
 	t.Parallel()
 
@@ -462,6 +484,68 @@ func TestValidateTemplateAllowsEmptyNonExecutableCommandArg(t *testing.T) {
 
 	if err := validateTemplate(template); err != nil {
 		t.Fatalf("validate template: %v", err)
+	}
+}
+
+func TestValidateTemplateRejectsConflictingKeepAboveAndKeepBelow(t *testing.T) {
+	t.Parallel()
+
+	template := Template{
+		Presets: []Preset{
+			{
+				Name:      "stacking-conflict",
+				App:       "org.kde.konsole",
+				Command:   CommandSpec{"echo", "hi"},
+				KeepAbove: true,
+				KeepBelow: true,
+				Geometry: PresetGeometry{
+					X:      "0",
+					Y:      "0",
+					Width:  "800",
+					Height: "600",
+				},
+			},
+		},
+	}
+
+	err := validateTemplate(template)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+
+	if !strings.Contains(err.Error(), "keepAbove and keepBelow cannot both be true") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateTemplateRejectsFullscreenAndMaximized(t *testing.T) {
+	t.Parallel()
+
+	template := Template{
+		Presets: []Preset{
+			{
+				Name:       "state-conflict",
+				App:        "org.kde.konsole",
+				Command:    CommandSpec{"echo", "hi"},
+				FullScreen: true,
+				Maximized:  "both",
+				Geometry: PresetGeometry{
+					X:      "0",
+					Y:      "0",
+					Width:  "800",
+					Height: "600",
+				},
+			},
+		},
+	}
+
+	err := validateTemplate(template)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+
+	if !strings.Contains(err.Error(), "fullscreen cannot be combined with maximized") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
