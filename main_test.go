@@ -794,6 +794,37 @@ func TestWaitForLaunchPresetCallbackReturnsErrorOnTimeout(t *testing.T) {
 	}
 }
 
+func TestWriteCaptureOutputReturnsStdoutWriteErrors(t *testing.T) {
+	t.Parallel()
+
+	tmp := filepath.Join(t.TempDir(), "stdout.txt")
+	if err := os.WriteFile(tmp, []byte(""), 0o644); err != nil {
+		t.Fatalf("seed stdout file: %v", err)
+	}
+
+	readOnly, err := os.Open(tmp)
+	if err != nil {
+		t.Fatalf("open read-only stdout file: %v", err)
+	}
+	defer readOnly.Close()
+
+	oldStdout := os.Stdout
+	os.Stdout = readOnly
+
+	defer func() {
+		os.Stdout = oldStdout
+	}()
+
+	err = writeCaptureOutput("-", []byte("payload"))
+	if err == nil {
+		t.Fatal("expected stdout write error")
+	}
+
+	if !strings.Contains(err.Error(), "failed to write stdout") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestGenerateJSAbortsOnInvalidTargetInsteadOfFallingBack(t *testing.T) {
 	t.Parallel()
 

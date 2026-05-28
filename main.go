@@ -1579,7 +1579,15 @@ func marshalCaptureTemplate(template Template, format string) ([]byte, error) {
 
 func writeCaptureOutput(outPath string, data []byte) error {
 	if outPath == "-" {
-		_, _ = os.Stdout.Write(data)
+		written, err := io.Copy(os.Stdout, bytes.NewReader(data))
+		if err != nil {
+			return fmt.Errorf("failed to write stdout: %w", err)
+		}
+
+		if written != int64(len(data)) {
+			return fmt.Errorf("failed to write stdout: %w", io.ErrShortWrite)
+		}
+
 		return nil
 	}
 
