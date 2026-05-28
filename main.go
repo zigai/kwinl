@@ -841,6 +841,14 @@ func validatePlaceSelectorsAndAnchor() error {
 		}
 	}
 
+	if placeKeepAboveFlag && placeKeepBelowFlag {
+		return &ValidationError{
+			Field:   "keep-above/keep-below",
+			Value:   "",
+			Message: "--keep-above and --keep-below cannot both be set",
+		}
+	}
+
 	return nil
 }
 
