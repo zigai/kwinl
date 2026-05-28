@@ -1209,14 +1209,7 @@ func loadLaunchPresetScript(conn *dbus.Conn, preset launchPresetRun) (string, er
 }
 
 func nextLaunchPresetCallback(ch <-chan placeResult, callbackToken string, timeout time.Duration) (placeResult, bool) {
-	perPresetWait := timeout
-
-	const maxPerPresetWait = 2 * time.Second
-	if perPresetWait <= 0 || perPresetWait > maxPerPresetWait {
-		perPresetWait = maxPerPresetWait
-	}
-
-	timer := time.NewTimer(perPresetWait)
+	timer := time.NewTimer(launchPresetWait(timeout))
 
 	defer func() {
 		if !timer.Stop() {
@@ -1285,17 +1278,20 @@ func waitForLaunchPresetCallback(ch <-chan placeResult, label, callbackToken str
 		return nil
 	}
 
-	perPresetWait := timeout
-
-	const maxPerPresetWait = 2 * time.Second
-	if perPresetWait <= 0 || perPresetWait > maxPerPresetWait {
-		perPresetWait = maxPerPresetWait
-	}
+	perPresetWait := launchPresetWait(timeout)
 
 	verbosef("launch preset %s placement callback timeout after %s; continuing",
 		label, perPresetWait)
 
 	return presetErr(label, placementTimeoutError(perPresetWait))
+}
+
+func launchPresetWait(timeout time.Duration) time.Duration {
+	if timeout > 0 {
+		return timeout
+	}
+
+	return time.Duration(defaultTimeoutSec) * time.Second
 }
 
 func parseLaunchTemplateInput(args []string, stdin io.Reader) (Template, error) {

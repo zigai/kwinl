@@ -794,6 +794,15 @@ func TestWaitForLaunchPresetCallbackReturnsErrorOnTimeout(t *testing.T) {
 	}
 }
 
+func TestLaunchPresetWaitUsesProvidedTimeout(t *testing.T) {
+	t.Parallel()
+
+	want := 15 * time.Second
+	if got := launchPresetWait(want); got != want {
+		t.Fatalf("unexpected wait duration: got %s want %s", got, want)
+	}
+}
+
 func TestWriteCaptureOutputReturnsStdoutWriteErrors(t *testing.T) {
 	t.Parallel()
 
