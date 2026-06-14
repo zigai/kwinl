@@ -6,6 +6,7 @@ Declarative window placement for KWin: launch programs into predefined geometrie
 
 - Place: launch a single app and move/resize its newly created window to a specific geometry
 - Launch: apply a YAML/JSON layout to start and arrange multiple apps at once
+- Windows: search existing windows and apply actions like activate/raise/lower/minimize
 - Layouts: manage named layouts stored in `~/.config/kwinl`
 - Capture: snapshot current windows into a reusable YAML/JSON layout template
 - Validate: check a layout file for errors without launching anything
@@ -102,6 +103,43 @@ Global Flags:
 Notes:
   - Use `-` to read a template from stdin.
   - With no positional argument, `launch` reads stdin when input is piped.
+```
+
+#### kwinl windows
+
+```
+Search and control existing KWin windows. Selectors are combined with AND logic:
+when --id, --app, and --match are provided, all provided selectors must match
+the same window.
+
+Search examples:
+  kwinl windows list
+  kwinl windows list --app code
+  kwinl windows list --match "Firefox"
+  kwinl windows list --json
+
+Action examples:
+  kwinl windows activate --app code
+  kwinl windows raise --id 123
+  kwinl windows lower --match "Firefox"
+  kwinl windows keep-above --app org.kde.konsole --all
+  kwinl windows unset-keep-above --id 123
+  kwinl windows minimize --match "Slack" --all
+
+Available actions:
+  activate, raise, lower, minimize, unminimize, toggle-minimize,
+  keep-above, keep-below, unset-keep-above, unset-keep-below,
+  toggle-keep-above, toggle-keep-below, clear-stacking, close
+
+Search output columns:
+  id, app, title, geometry, monitor, desktop, states
+
+Action behavior:
+  - Actions target the topmost matching window by default.
+  - Use --all to apply an action to every matching window.
+  - If no matching window exists, action commands exit with code 30.
+
+The old "search" spelling remains available as an alias for "list".
 ```
 
 #### kwinl layouts list
