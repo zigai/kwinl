@@ -83,6 +83,24 @@ func savePlaceFlags() func() {
 	}
 }
 
+func saveWindowFlags() func() {
+	savedID := windowIDFlag
+	savedApp := windowAppFlag
+	savedMatch := windowMatchFlag
+	savedTimeout := windowTimeoutFlag
+	savedAll := windowAllFlag
+	savedJSON := windowJSONFlag
+
+	return func() {
+		windowIDFlag = savedID
+		windowAppFlag = savedApp
+		windowMatchFlag = savedMatch
+		windowTimeoutFlag = savedTimeout
+		windowAllFlag = savedAll
+		windowJSONFlag = savedJSON
+	}
+}
+
 func TestParseTemplateAcceptsNumericGeometryValuesInJSON(t *testing.T) {
 	t.Parallel()
 
@@ -463,6 +481,71 @@ func TestParseAndValidatePlaceRejectsConflictingKeepStackingFlags(t *testing.T) 
 	}
 }
 
+func TestParseWindowSearchConfigAllowsEmptySelector(t *testing.T) {
+	restore := saveWindowFlags()
+	defer restore()
+
+	windowIDFlag = ""
+	windowAppFlag = ""
+	windowMatchFlag = ""
+	windowTimeoutFlag = "2s"
+	windowJSONFlag = true
+
+	cfg, err := parseWindowSearchConfig()
+	if err != nil {
+		t.Fatalf("parseWindowSearchConfig: %v", err)
+	}
+	defer os.RemoveAll(cfg.TempDir)
+
+	if cfg.Selector != (windowSelector{}) {
+		t.Fatalf("unexpected selector: %+v", cfg.Selector)
+	}
+
+	if !cfg.JSONOutput {
+		t.Fatal("expected JSON output flag to be preserved")
+	}
+}
+
+func TestParseWindowActionConfigRequiresSelector(t *testing.T) {
+	restore := saveWindowFlags()
+	defer restore()
+
+	windowIDFlag = ""
+	windowAppFlag = ""
+	windowMatchFlag = ""
+	windowTimeoutFlag = "2s"
+
+	_, err := parseWindowActionConfig(windowActionRaise)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+
+	if !strings.Contains(err.Error(), "at least one of --id, --app, or --match is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseWindowActionConfigAcceptsIDSelector(t *testing.T) {
+	restore := saveWindowFlags()
+	defer restore()
+
+	windowIDFlag = "123"
+	windowAppFlag = ""
+	windowMatchFlag = ""
+	windowTimeoutFlag = "2s"
+	windowAllFlag = true
+
+	cfg, err := parseWindowActionConfig(windowActionLower)
+	if err != nil {
+		t.Fatalf("parseWindowActionConfig: %v", err)
+	}
+	defer os.RemoveAll(cfg.TempDir)
+
+	if cfg.Selector.ID != "123" || cfg.Action != windowActionLower || !cfg.All {
+		t.Fatalf("unexpected action config: %+v", cfg)
+	}
+}
+
 func TestValidateTemplateAllowsEmptyNonExecutableCommandArg(t *testing.T) {
 	t.Parallel()
 
@@ -794,6 +877,31 @@ func TestWaitForLaunchPresetCallbackReturnsErrorOnTimeout(t *testing.T) {
 	}
 }
 
+func TestWaitForWindowActionReturnsReportedNoMatchExit(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan placeResult, 1)
+	ch <- placeResult{Success: false, Message: "no matching window found"}
+
+	err := waitForWindowAction(50*time.Millisecond, ch)
+	if err == nil {
+		t.Fatal("expected no-match error")
+	}
+
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+
+	if exitErr.Code != exitCodeNoMatch {
+		t.Fatalf("unexpected exit code: got %d want %d", exitErr.Code, exitCodeNoMatch)
+	}
+
+	if !exitErr.Reported {
+		t.Fatal("expected no-match error to be marked as reported")
+	}
+}
+
 func TestLaunchPresetWaitUsesProvidedTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -857,5 +965,73 @@ func TestGenerateJSAbortsOnInvalidTargetInsteadOfFallingBack(t *testing.T) {
 
 	if strings.Contains(js, `falling back to first output index 0`) {
 		t.Fatalf("expected generated JS to stop silent monitor fallback, got:\n%s", js)
+	}
+}
+
+func TestGenerateWindowSearchJSSendsWindowPayload(t *testing.T) {
+	t.Parallel()
+
+	js := generateWindowSearchJS(jsWindowSearchConfig{
+		ScriptName: "script",
+		Selector: windowSelector{
+			App:   "code",
+			Match: `^/home/me/project - Visual Studio Code$`,
+		},
+		Verbose: false,
+		Service: "io.github.kwinl.Capture.test",
+	})
+
+	if !strings.Contains(js, `JSON.stringify({ windows: found })`) {
+		t.Fatalf("expected generated JS to send a window payload, got:\n%s", js)
+	}
+
+	if !strings.Contains(js, `appIds: ids`) || !strings.Contains(js, `caption: "" + (w.caption || "")`) {
+		t.Fatalf("expected generated JS to include searchable window metadata, got:\n%s", js)
+	}
+
+	if !strings.Contains(js, `return idOK && appOK && matchOK;`) {
+		t.Fatalf("expected generated JS to require all provided selectors, got:\n%s", js)
+	}
+}
+
+func TestGenerateWindowActionJSSupportsRaiseAndLower(t *testing.T) {
+	t.Parallel()
+
+	js := generateWindowActionJS(jsWindowActionConfig{
+		ScriptName: "script",
+		Selector:   windowSelector{ID: "123"},
+		Action:     windowActionRaise,
+		All:        false,
+		Verbose:    false,
+	})
+
+	if !strings.Contains(js, `workspace.raiseWindow(w);`) {
+		t.Fatalf("expected generated JS to raise windows, got:\n%s", js)
+	}
+
+	if !strings.Contains(js, `workspace.slotWindowLower();`) {
+		t.Fatalf("expected generated JS to lower windows, got:\n%s", js)
+	}
+
+	if !strings.Contains(js, `case "keep-above":`) || !strings.Contains(js, `case "keep-below":`) {
+		t.Fatalf("expected generated JS to support stacking state actions, got:\n%s", js)
+	}
+
+	if !strings.Contains(js, `if (!APPLY_ALL) break;`) {
+		t.Fatalf("expected generated JS to default to one topmost match, got:\n%s", js)
+	}
+}
+
+func TestWindowStateStringFormatsCommonStates(t *testing.T) {
+	t.Parallel()
+
+	got := windowStateString(windowInfo{Minimized: true, KeepAbove: true, FullScreen: true})
+	if got != "minimized,keep-above,fullscreen" {
+		t.Fatalf("unexpected state string: %q", got)
+	}
+
+	emptyState := windowStateString(windowInfo{})
+	if emptyState != "-" {
+		t.Fatalf("unexpected empty state string: %q", emptyState)
 	}
 }

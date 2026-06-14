@@ -38,6 +38,7 @@ const (
 	exitCodeDBusFailure  = 10
 	exitCodeLoadFailed   = 11
 	exitCodeLaunchFailed = 20
+	exitCodeNoMatch      = 30
 	exitCodeInterrupted  = 130
 	exitCodeTerminated   = 143
 
@@ -47,7 +48,23 @@ const (
 	placeObjectPath = "/io/github/kwinl/Place"
 	placeIface      = "io.github.kwinl.Place"
 
-	formatJSON = "json"
+	fieldLayout = "layout"
+	formatJSON  = "json"
+
+	windowActionActivate       = "activate"
+	windowActionRaise          = "raise"
+	windowActionLower          = "lower"
+	windowActionMinimize       = "minimize"
+	windowActionUnminimize     = "unminimize"
+	windowActionKeepAbove      = "keep-above"
+	windowActionKeepBelow      = "keep-below"
+	windowActionUnsetAbove     = "unset-keep-above"
+	windowActionUnsetBelow     = "unset-keep-below"
+	windowActionClearStacking  = "clear-stacking"
+	windowActionClose          = "close"
+	windowActionToggleAbove    = "toggle-keep-above"
+	windowActionToggleBelow    = "toggle-keep-below"
+	windowActionToggleMinimize = "toggle-minimize"
 )
 
 var (
@@ -56,6 +73,7 @@ var (
 	errAlreadyOwned                              = errors.New("already owned")
 	errNoCapturePayloadReceived                  = errors.New("no payload received from KWin script")
 	errNoPlacementCallbackReceived               = errors.New("no placement callback received")
+	errNoMatchingWindow                          = errors.New("no matching window found")
 	errSplitCommandUnfinishedEscape              = errors.New("unfinished escape at end of command")
 	errSplitCommandUnterminatedQuote             = errors.New("unterminated quote in command")
 	errInterruptedBySIGINT                       = errors.New("interrupted by SIGINT")
@@ -67,6 +85,23 @@ var validAnchors = []string{
 	"top-left", "top-center", "top-right",
 	"center-left", "center", "center-right",
 	"bottom-left", "bottom-center", "bottom-right",
+}
+
+var validWindowActions = []string{
+	windowActionActivate,
+	windowActionRaise,
+	windowActionLower,
+	windowActionMinimize,
+	windowActionUnminimize,
+	windowActionKeepAbove,
+	windowActionKeepBelow,
+	windowActionUnsetAbove,
+	windowActionUnsetBelow,
+	windowActionClearStacking,
+	windowActionClose,
+	windowActionToggleAbove,
+	windowActionToggleBelow,
+	windowActionToggleMinimize,
 }
 
 type GeomValue struct {
@@ -390,6 +425,13 @@ var (
 	placeKeepBelowFlag bool
 	launchTimeoutFlag  string
 
+	windowIDFlag      string
+	windowAppFlag     string
+	windowMatchFlag   string
+	windowTimeoutFlag string
+	windowAllFlag     bool
+	windowJSONFlag    bool
+
 	captureTimeoutFlag      string
 	captureInferCommandFlag bool
 	captureIncludeUnknown   bool
@@ -402,6 +444,50 @@ type captureOptions struct {
 	IncludeUnknown bool
 	CurrentDesktop bool
 	MonitorFilter  string
+}
+
+type windowSelector struct {
+	ID    string
+	App   string
+	Match string
+}
+
+type windowSearchConfig struct {
+	Selector   windowSelector
+	Timeout    time.Duration
+	JSONOutput bool
+	ScriptName string
+	TempDir    string
+	JSFile     string
+}
+
+type windowActionConfig struct {
+	Selector   windowSelector
+	Action     string
+	All        bool
+	Timeout    time.Duration
+	ScriptName string
+	TempDir    string
+	JSFile     string
+}
+
+type windowInfo struct {
+	ID            string   `json:"id"`
+	App           string   `json:"app"`
+	AppIDs        []string `json:"appIds"`
+	Caption       string   `json:"caption"`
+	Geometry      string   `json:"geometry"`
+	Monitor       string   `json:"monitor"`
+	Desktop       string   `json:"desktop"`
+	Minimized     bool     `json:"minimized"`
+	KeepAbove     bool     `json:"keepAbove"`
+	KeepBelow     bool     `json:"keepBelow"`
+	FullScreen    bool     `json:"fullscreen"`
+	OnAllDesktops bool     `json:"onAllDesktops"`
+}
+
+type windowSearchPayload struct {
+	Windows []windowInfo `json:"windows"`
 }
 
 var rootCmd = &cobra.Command{
@@ -450,6 +536,50 @@ Use "-" to read a template from stdin, or pipe directly with no positional args.
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE:          runLaunch,
+}
+
+var windowsCmd = &cobra.Command{
+	Use:   "windows",
+	Short: "Search and control existing KWin windows",
+}
+
+var windowsSearchCmd = &cobra.Command{
+	Use:     "list [flags]",
+	Aliases: []string{"search", "ls"},
+	Short:   "List existing windows",
+	Long: `Search existing KWin windows by internal ID, application ID, or title regex.
+With no selectors, all manageable windows are listed.`,
+	Example: `  kwinl windows list
+  kwinl windows list --app code
+  kwinl windows list --app code --match "^/home/me/project - Visual Studio Code$"
+  kwinl windows list --json --match "Firefox"`,
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runWindowsSearch,
+}
+
+func newWindowsActionCmd(action, short string) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   action + " [flags]",
+		Short: short,
+		Long: `Find existing KWin windows by internal ID, application ID, or title regex,
+then apply this action to the topmost match. Use --all to apply the action to
+all matching windows.`,
+		Example: fmt.Sprintf(`  kwinl windows %[1]s --id 123
+  kwinl windows %[1]s --app code --match "^/home/me/project - Visual Studio Code$"
+  kwinl windows %[1]s --match "Firefox" --all`, action),
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runWindowsAction(action)
+		},
+	}
+
+	addWindowActionFlags(cmd)
+
+	return cmd
 }
 
 var layoutsCmd = &cobra.Command{
@@ -542,6 +672,24 @@ var cleanupCmd = &cobra.Command{
 
 var cleanupDryRunFlag bool
 
+func addWindowSelectorFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&windowIDFlag, "id", "", "KWin internal window ID to match")
+	cmd.Flags().StringVarP(&windowAppFlag, "app", "a", "", "application ID to match")
+	cmd.Flags().StringVarP(&windowMatchFlag, "match", "m", "", "regex pattern to match window title")
+}
+
+func addWindowSearchFlags(cmd *cobra.Command) {
+	addWindowSelectorFlags(cmd)
+	cmd.Flags().BoolVar(&windowJSONFlag, "json", false, "write search results as JSON")
+	cmd.Flags().StringVarP(&windowTimeoutFlag, "timeout", "t", "2s", "timeout duration (e.g., 2s, 500ms)")
+}
+
+func addWindowActionFlags(cmd *cobra.Command) {
+	addWindowSelectorFlags(cmd)
+	cmd.Flags().BoolVar(&windowAllFlag, "all", false, "apply action to all matching windows")
+	cmd.Flags().StringVarP(&windowTimeoutFlag, "timeout", "t", "2s", "timeout duration (e.g., 2s, 500ms)")
+}
+
 //nolint:gochecknoinits // cobra setup uses init for flag wiring.
 func init() {
 	rootCmd.SetVersionTemplate("{{.Version}}\n")
@@ -567,6 +715,8 @@ func init() {
 	launchCmd.Flags().StringVarP(&launchTimeoutFlag, "timeout", "t", "", "timeout override (e.g., 10s)")
 	layoutsLaunchCmd.Flags().StringVarP(&launchTimeoutFlag, "timeout", "t", "", "timeout override (e.g., 10s)")
 
+	addWindowSearchFlags(windowsSearchCmd)
+
 	captureCmd.Flags().StringVarP(&captureTimeoutFlag, "timeout", "t", "2s", "capture timeout (e.g., 2s, 500ms)")
 	captureCmd.Flags().BoolVar(&captureInferCommandFlag, "infer-command", true, "infer a best-effort launcher command using gtk-launch")
 	captureCmd.Flags().BoolVarP(&captureIncludeUnknown, "include-unknown", "u", false, "include windows without desktopFileName/appId (matched by title; may require manual command)")
@@ -579,8 +729,25 @@ func init() {
 	layoutsCmd.AddCommand(layoutsRemoveCmd)
 	layoutsCmd.AddCommand(layoutsLaunchCmd)
 
+	windowsCmd.AddCommand(windowsSearchCmd)
+	windowsCmd.AddCommand(newWindowsActionCmd(windowActionActivate, "Activate an existing window"))
+	windowsCmd.AddCommand(newWindowsActionCmd(windowActionRaise, "Raise an existing window"))
+	windowsCmd.AddCommand(newWindowsActionCmd(windowActionLower, "Lower an existing window"))
+	windowsCmd.AddCommand(newWindowsActionCmd(windowActionMinimize, "Minimize existing windows"))
+	windowsCmd.AddCommand(newWindowsActionCmd(windowActionUnminimize, "Unminimize existing windows"))
+	windowsCmd.AddCommand(newWindowsActionCmd(windowActionToggleMinimize, "Toggle minimized state on existing windows"))
+	windowsCmd.AddCommand(newWindowsActionCmd(windowActionKeepAbove, "Keep existing windows above others"))
+	windowsCmd.AddCommand(newWindowsActionCmd(windowActionKeepBelow, "Keep existing windows below others"))
+	windowsCmd.AddCommand(newWindowsActionCmd(windowActionUnsetAbove, "Clear keep-above on existing windows"))
+	windowsCmd.AddCommand(newWindowsActionCmd(windowActionUnsetBelow, "Clear keep-below on existing windows"))
+	windowsCmd.AddCommand(newWindowsActionCmd(windowActionToggleAbove, "Toggle keep-above on existing windows"))
+	windowsCmd.AddCommand(newWindowsActionCmd(windowActionToggleBelow, "Toggle keep-below on existing windows"))
+	windowsCmd.AddCommand(newWindowsActionCmd(windowActionClearStacking, "Clear keep-above and keep-below"))
+	windowsCmd.AddCommand(newWindowsActionCmd(windowActionClose, "Close existing windows"))
+
 	rootCmd.AddCommand(placeCmd)
 	rootCmd.AddCommand(launchCmd)
+	rootCmd.AddCommand(windowsCmd)
 	rootCmd.AddCommand(layoutsCmd)
 	rootCmd.AddCommand(captureCmd)
 	rootCmd.AddCommand(validateCmd)
@@ -794,6 +961,320 @@ func waitForPlaceCommand(timeout time.Duration, results <-chan placeResult, cmdP
 	verbosef("waiting for placement callback (timeout: %s)", timeout)
 
 	return waitAndCleanup()
+}
+
+func waitForWindowAction(timeout time.Duration, resultCh <-chan placeResult) error {
+	sigCh := make(chan os.Signal, 1)
+
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case result := <-resultCh:
+		verbosef("window action callback received: success=%v windowID=%s caption=%s geometry=%s",
+			result.Success, result.WindowID, result.Caption, result.Geometry)
+
+		if result.Success {
+			return nil
+		}
+
+		message := strings.TrimSpace(result.Message)
+		if message == "" || message == errNoMatchingWindow.Error() {
+			return reportedExitError(exitCodeNoMatch, errNoMatchingWindow)
+		}
+
+		return &ValidationError{Field: "target", Value: "", Message: message}
+	case <-timer.C:
+		return newExitError(exitCodeLoadFailed, fmt.Errorf("window action timed out after %s (%w)", timeout, errNoMatchingWindow))
+	case sig := <-sigCh:
+		switch sig {
+		case syscall.SIGINT:
+			return newExitError(exitCodeInterrupted, errInterruptedBySIGINT)
+		case syscall.SIGTERM:
+			return newExitError(exitCodeTerminated, errInterruptedBySIGTERM)
+		default:
+			return newExitError(exitCodeTerminated, fmt.Errorf("%w %v", errInterruptedBySignal, sig))
+		}
+	}
+}
+
+func runWindowsSearch(cmd *cobra.Command, args []string) error {
+	cfg, err := parseWindowSearchConfig()
+	if err != nil {
+		return err
+	}
+
+	defer removeTempDirWarn(cfg.TempDir)
+
+	conn, err := dbus.ConnectSessionBus()
+	if err != nil {
+		return newExitError(exitCodeDBusFailure, fmt.Errorf("cannot connect to session D-Bus: %w", err))
+	}
+
+	defer closeDBusConnWarn(conn)
+
+	recv, serviceName, err := initCaptureCallback(conn)
+	if err != nil {
+		return err
+	}
+
+	if err := writeWindowSearchJSFile(cfg, serviceName); err != nil {
+		return err
+	}
+
+	scriptPath, err := loadWindowScriptPath(conn, cfg.JSFile, cfg.ScriptName)
+	if err != nil {
+		return err
+	}
+
+	defer unloadScript(conn, cfg.ScriptName)
+
+	if err := runScript(conn, cfg.ScriptName, scriptPath); err != nil {
+		return newExitError(exitCodeLoadFailed, err)
+	}
+
+	payload, err := waitForCapturePayload(recv.ch, cfg.Timeout)
+	if err != nil {
+		return err
+	}
+
+	return printWindowSearchPayload(payload, cfg.JSONOutput)
+}
+
+func runWindowsAction(action string) error {
+	cfg, err := parseWindowActionConfig(action)
+	if err != nil {
+		return err
+	}
+
+	defer removeTempDirWarn(cfg.TempDir)
+
+	conn, err := dbus.ConnectSessionBus()
+	if err != nil {
+		return newExitError(exitCodeDBusFailure, fmt.Errorf("cannot connect to session D-Bus: %w", err))
+	}
+
+	defer closeDBusConnWarn(conn)
+
+	recv, callbackService, err := initPlaceCallback(conn)
+	if err != nil {
+		return err
+	}
+
+	if err := writeWindowActionJSFile(cfg, callbackService); err != nil {
+		return err
+	}
+
+	scriptPath, err := loadWindowScriptPath(conn, cfg.JSFile, cfg.ScriptName)
+	if err != nil {
+		return err
+	}
+
+	defer unloadScript(conn, cfg.ScriptName)
+
+	if err := runScript(conn, cfg.ScriptName, scriptPath); err != nil {
+		return newExitError(exitCodeLoadFailed, err)
+	}
+
+	return waitForWindowAction(cfg.Timeout, recv.ch)
+}
+
+func parseWindowSelector(allowEmpty bool) (windowSelector, error) {
+	selector := windowSelector{
+		ID:    strings.TrimSpace(windowIDFlag),
+		App:   strings.TrimSpace(windowAppFlag),
+		Match: strings.TrimSpace(windowMatchFlag),
+	}
+
+	if !allowEmpty && selector.ID == "" && selector.App == "" && selector.Match == "" {
+		return windowSelector{}, &ValidationError{
+			Field:   "window",
+			Value:   "",
+			Message: "at least one of --id, --app, or --match is required",
+		}
+	}
+
+	if selector.Match != "" {
+		if _, err := regexp.Compile(selector.Match); err != nil {
+			return windowSelector{}, &ValidationError{
+				Field:   "match",
+				Value:   selector.Match,
+				Message: "invalid regex: " + err.Error(),
+			}
+		}
+	}
+
+	return selector, nil
+}
+
+func parseWindowSearchConfig() (windowSearchConfig, error) {
+	selector, err := parseWindowSelector(true)
+	if err != nil {
+		return windowSearchConfig{}, err
+	}
+
+	timeout, err := parseTimeout(windowTimeoutFlag)
+	if err != nil {
+		return windowSearchConfig{}, err
+	}
+
+	scriptName := fmt.Sprintf("kwinl-windows-search-%d-%s", os.Getpid(), generateRandomSuffix())
+
+	tempDir, err := os.MkdirTemp("", "kwinl-windows-search-*")
+	if err != nil {
+		return windowSearchConfig{}, fmt.Errorf("failed to create temp dir: %w", err)
+	}
+
+	return windowSearchConfig{
+		Selector:   selector,
+		Timeout:    timeout,
+		JSONOutput: windowJSONFlag,
+		ScriptName: scriptName,
+		TempDir:    tempDir,
+		JSFile:     filepath.Join(tempDir, scriptName+".js"),
+	}, nil
+}
+
+func parseWindowActionConfig(action string) (windowActionConfig, error) {
+	if !slices.Contains(validWindowActions, action) {
+		return windowActionConfig{}, &ValidationError{
+			Field:   "action",
+			Value:   action,
+			Message: "valid actions: " + strings.Join(validWindowActions, ", "),
+		}
+	}
+
+	selector, err := parseWindowSelector(false)
+	if err != nil {
+		return windowActionConfig{}, err
+	}
+
+	timeout, err := parseTimeout(windowTimeoutFlag)
+	if err != nil {
+		return windowActionConfig{}, err
+	}
+
+	scriptName := fmt.Sprintf("kwinl-windows-%s-%d-%s", action, os.Getpid(), generateRandomSuffix())
+
+	tempDir, err := os.MkdirTemp("", "kwinl-windows-action-*")
+	if err != nil {
+		return windowActionConfig{}, fmt.Errorf("failed to create temp dir: %w", err)
+	}
+
+	return windowActionConfig{
+		Selector:   selector,
+		Action:     action,
+		All:        windowAllFlag,
+		Timeout:    timeout,
+		ScriptName: scriptName,
+		TempDir:    tempDir,
+		JSFile:     filepath.Join(tempDir, scriptName+".js"),
+	}, nil
+}
+
+func loadWindowScriptPath(conn *dbus.Conn, jsFile, scriptName string) (string, error) {
+	scriptPath, err := loadScript(conn, jsFile, scriptName)
+	if err == nil {
+		return scriptPath, nil
+	}
+
+	var warning *ScriptPathError
+	if errors.As(err, &warning) {
+		log.Printf("warning: %v", warning)
+		return scriptPath, nil
+	}
+
+	return "", newExitError(exitCodeLoadFailed, fmt.Errorf("loadScript failed: %w", err))
+}
+
+func writeWindowSearchJSFile(cfg windowSearchConfig, serviceName string) error {
+	js := generateWindowSearchJS(jsWindowSearchConfig{
+		ScriptName: cfg.ScriptName,
+		Selector:   cfg.Selector,
+		Verbose:    verboseFlag,
+		Service:    serviceName,
+	})
+
+	if err := os.WriteFile(cfg.JSFile, []byte(js), 0o600); err != nil {
+		return fmt.Errorf("write window search JS file %q: %w", cfg.JSFile, err)
+	}
+
+	return nil
+}
+
+func writeWindowActionJSFile(cfg windowActionConfig, callbackService string) error {
+	js := generateWindowActionJS(jsWindowActionConfig{
+		ScriptName:      cfg.ScriptName,
+		Selector:        cfg.Selector,
+		Action:          cfg.Action,
+		All:             cfg.All,
+		Verbose:         verboseFlag,
+		CallbackService: callbackService,
+		CallbackToken:   cfg.ScriptName,
+	})
+
+	if err := os.WriteFile(cfg.JSFile, []byte(js), 0o600); err != nil {
+		return fmt.Errorf("write window action JS file %q: %w", cfg.JSFile, err)
+	}
+
+	return nil
+}
+
+func printWindowSearchPayload(payload string, jsonOutput bool) error {
+	var parsed windowSearchPayload
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		return fmt.Errorf("parse window search payload JSON: %w", err)
+	}
+
+	if jsonOutput {
+		data, err := json.MarshalIndent(parsed, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal window search payload JSON: %w", err)
+		}
+
+		fmt.Println(string(data))
+
+		return nil
+	}
+
+	for _, w := range parsed.Windows {
+		fmt.Printf("%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			w.ID, w.App, w.Caption, w.Geometry, w.Monitor, w.Desktop, windowStateString(w))
+	}
+
+	return nil
+}
+
+func windowStateString(w windowInfo) string {
+	var states []string
+	if w.Minimized {
+		states = append(states, "minimized")
+	}
+
+	if w.KeepAbove {
+		states = append(states, "keep-above")
+	}
+
+	if w.KeepBelow {
+		states = append(states, "keep-below")
+	}
+
+	if w.FullScreen {
+		states = append(states, "fullscreen")
+	}
+
+	if w.OnAllDesktops {
+		states = append(states, "all-desktops")
+	}
+
+	if len(states) == 0 {
+		return "-"
+	}
+
+	return strings.Join(states, ",")
 }
 
 func parsePlaceCommandFlagValue() ([]string, error) {
@@ -1302,7 +1783,7 @@ func parseLaunchTemplateInput(args []string, stdin io.Reader) (Template, error) 
 	if len(args) == 1 {
 		target := strings.TrimSpace(args[0])
 		if target == "" {
-			return Template{}, &ValidationError{Field: "layout", Value: "", Message: "path is required"}
+			return Template{}, &ValidationError{Field: fieldLayout, Value: "", Message: "path is required"}
 		}
 
 		if target == "-" {
@@ -1319,7 +1800,7 @@ func parseLaunchTemplateInput(args []string, stdin io.Reader) (Template, error) 
 
 	if !hasPipedInput {
 		return Template{}, &ValidationError{
-			Field:   "layout",
+			Field:   fieldLayout,
 			Value:   "",
 			Message: "expected a layout file path or piped stdin (use '-' to read stdin explicitly)",
 		}
@@ -2111,11 +2592,11 @@ func resolveLayoutByNameInDir(layoutsDir, name string) (layoutFile, error) {
 func normalizeLayoutLookupName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return "", &ValidationError{Field: "layout", Value: "", Message: "name is required"}
+		return "", &ValidationError{Field: fieldLayout, Value: "", Message: "name is required"}
 	}
 
 	if filepath.Base(name) != name {
-		return "", &ValidationError{Field: "layout", Value: name, Message: "must be a layout name, not a path"}
+		return "", &ValidationError{Field: fieldLayout, Value: name, Message: "must be a layout name, not a path"}
 	}
 
 	return name, nil
@@ -2129,7 +2610,7 @@ func resolveLayoutByExactFilename(layoutsDir, name string) (layoutFile, bool, er
 
 	if !isSupportedLayoutExt(ext) {
 		return layoutFile{}, true, &ValidationError{
-			Field:   "layout",
+			Field:   fieldLayout,
 			Value:   name,
 			Message: "unsupported extension (expected .yaml, .yml, or .json)",
 		}
@@ -2148,7 +2629,7 @@ func resolveLayoutByExactFilename(layoutsDir, name string) (layoutFile, bool, er
 
 	if info.IsDir() {
 		return layoutFile{}, true, &ValidationError{
-			Field:   "layout",
+			Field:   fieldLayout,
 			Value:   name,
 			Message: "refers to a directory",
 		}
@@ -2193,7 +2674,7 @@ func resolveLayoutByBasename(layoutsDir, name string) (layoutFile, error) {
 	}
 
 	return layoutFile{}, &ValidationError{
-		Field:   "layout",
+		Field:   fieldLayout,
 		Value:   name,
 		Message: "ambiguous name; matches: " + strings.Join(fileNames, ", ") + " (use an exact filename)",
 	}
@@ -2201,7 +2682,7 @@ func resolveLayoutByBasename(layoutsDir, name string) (layoutFile, error) {
 
 func layoutNotFoundError(layoutsDir, name string) error {
 	return &ValidationError{
-		Field:   "layout",
+		Field:   fieldLayout,
 		Value:   name,
 		Message: fmt.Sprintf("not found in %q", layoutsDir),
 	}
@@ -2835,6 +3316,23 @@ type jsPlacementConfig struct {
 	KeepMode        bool
 }
 
+type jsWindowSearchConfig struct {
+	ScriptName string
+	Selector   windowSelector
+	Verbose    bool
+	Service    string
+}
+
+type jsWindowActionConfig struct {
+	ScriptName      string
+	Selector        windowSelector
+	Action          string
+	All             bool
+	Verbose         bool
+	CallbackService string
+	CallbackToken   string
+}
+
 func mustJSONString(v string) string {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -2842,6 +3340,509 @@ func mustJSONString(v string) string {
 	}
 
 	return string(data)
+}
+
+func generateWindowSearchJS(cfg jsWindowSearchConfig) string {
+	scriptNameJSON := mustJSONString(cfg.ScriptName)
+	targetIDJSON := mustJSONString(cfg.Selector.ID)
+	targetAppJSON := mustJSONString(cfg.Selector.App)
+	targetMatchJSON := mustJSONString(cfg.Selector.Match)
+	serviceJSON := mustJSONString(cfg.Service)
+	pathJSON := mustJSONString(captureObjectPath)
+	ifaceJSON := mustJSONString(captureIface)
+
+	return fmt.Sprintf(`// Auto-generated window search script: %s
+var SCRIPT_NAME = %s;
+var TARGET_ID = %s;
+var TARGET_APP = %s;
+var TARGET_MATCH = %s;
+var VERBOSE = %v;
+var CAP_SERVICE = %s;
+var CAP_PATH = %s;
+var CAP_IFACE = %s;
+
+function vlog() {
+  if (!VERBOSE) return;
+  var msg = "[kwinl] ";
+  for (var i = 0; i < arguments.length; i++) msg += arguments[i] + " ";
+  print(msg);
+}
+
+function idOf(w) { return "" + w.internalId; }
+
+function windowIds(w) {
+  var ids = [];
+  function add(v) {
+    if (v === undefined || v === null) return;
+    var s = ("" + v).trim();
+    if (s === "") return;
+    for (var i = 0; i < ids.length; i++) {
+      if (ids[i] === s) return;
+    }
+    ids.push(s);
+  }
+
+  try { add(w.desktopFileName); } catch (e) {}
+  try { add(w.resourceClass); } catch (e) {}
+  try { add(w.resourceName); } catch (e) {}
+  try { add(w.appId); } catch (e) {}
+  return ids;
+}
+
+function appTargetMatches(id, target) {
+  if (!id || !target) return false;
+  if (id === target) return true;
+  if (id === (target + ".desktop")) return true;
+  if (id.endsWith("/" + target + ".desktop")) return true;
+  if (id.endsWith("/" + target)) return true;
+
+  var idLower = id.toLowerCase();
+  var targetLower = target.toLowerCase();
+  if (idLower === targetLower) return true;
+  if (idLower === (targetLower + ".desktop")) return true;
+  if (idLower.endsWith("/" + targetLower + ".desktop")) return true;
+  if (idLower.endsWith("/" + targetLower)) return true;
+
+  function stripPathAndDesktop(s) {
+    var out = s;
+    var slash = out.lastIndexOf("/");
+    if (slash >= 0) out = out.slice(slash + 1);
+    if (out.endsWith(".desktop")) out = out.slice(0, -8);
+    return out;
+  }
+
+  function lastSegment(s) {
+    var dot = s.lastIndexOf(".");
+    if (dot >= 0 && dot + 1 < s.length) return s.slice(dot + 1);
+    return s;
+  }
+
+  function stripInstanceSuffix(s) {
+    return s.replace(/-[0-9]+$/, "");
+  }
+
+  var idNorm = stripPathAndDesktop(idLower);
+  var targetNorm = stripPathAndDesktop(targetLower);
+  if (idNorm === targetNorm) return true;
+
+  var idTail = stripInstanceSuffix(lastSegment(idNorm));
+  var targetTail = stripInstanceSuffix(lastSegment(targetNorm));
+  if (idTail !== "" && idTail === targetTail) return true;
+
+  if (idNorm.startsWith(targetNorm + "-")) return true;
+  if (targetNorm.startsWith(idNorm + "-")) return true;
+  return false;
+}
+
+function isManageable(w) {
+  if (!w) return false;
+  if (w.deleted) return false;
+  if (w.specialWindow) return false;
+  if (w.popupWindow) return false;
+  if (w.dock) return false;
+  if (w.desktopWindow) return false;
+  return true;
+}
+
+function windowMatches(w) {
+  if (!isManageable(w)) return false;
+
+  var idOK = TARGET_ID === "";
+  if (TARGET_ID !== "") idOK = idOf(w) === TARGET_ID;
+
+  var appOK = TARGET_APP === "";
+  var ids = windowIds(w);
+  if (TARGET_APP !== "") {
+    for (var i = 0; i < ids.length; i++) {
+      if (appTargetMatches(ids[i], TARGET_APP)) {
+        appOK = true;
+        break;
+      }
+    }
+  }
+
+  var matchOK = TARGET_MATCH === "";
+  if (TARGET_MATCH !== "") {
+    try {
+      var re = new RegExp(TARGET_MATCH);
+      matchOK = re.test(w.caption || "");
+    } catch (e) { vlog("windowMatches: regex error", e); }
+  }
+
+  return idOK && appOK && matchOK;
+}
+
+function geometryString(w) {
+  try {
+    var g = w.frameGeometry;
+    return g.x + "," + g.y + "," + g.width + "," + g.height;
+  } catch (e) {
+    return "";
+  }
+}
+
+function outputName(out) {
+  if (!out) return "";
+  try { if (out.name) return "" + out.name; } catch (e) {}
+  try { if (out.connector) return "" + out.connector; } catch (e) {}
+  try { if (out.connectorName) return "" + out.connectorName; } catch (e) {}
+  return "";
+}
+
+function findOutputForWindow(w) {
+  var fg = w.frameGeometry;
+  var cx = Math.round(fg.x + fg.width / 2);
+  var cy = Math.round(fg.y + fg.height / 2);
+  var screens = workspace.screens || [];
+  for (var i = 0; i < screens.length; i++) {
+    var g = screens[i].geometry;
+    if (cx >= g.x && cx < g.x + g.width && cy >= g.y && cy < g.y + g.height) {
+      return screens[i];
+    }
+  }
+  return null;
+}
+
+function desktopNameForWindow(w) {
+  try {
+    if (w.desktops && w.desktops.length > 0) {
+      var d = w.desktops[0];
+      if (d && d.name) return "" + d.name;
+    }
+  } catch (e) {}
+  return "";
+}
+
+function windowInfo(w) {
+  var ids = windowIds(w);
+  return {
+    id: idOf(w),
+    app: ids.length > 0 ? ids[0] : "",
+    appIds: ids,
+    caption: "" + (w.caption || ""),
+    geometry: geometryString(w),
+    monitor: outputName(findOutputForWindow(w)),
+    desktop: desktopNameForWindow(w),
+    minimized: !!w.minimized,
+    keepAbove: !!w.keepAbove,
+    keepBelow: !!w.keepBelow,
+    fullscreen: !!w.fullScreen,
+    onAllDesktops: !!w.onAllDesktops
+  };
+}
+
+function search() {
+  var wins = workspace.stackingOrder || [];
+  var found = [];
+  for (var i = wins.length - 1; i >= 0; i--) {
+    var w = wins[i];
+    if (windowMatches(w)) found.push(windowInfo(w));
+  }
+
+  var payload = JSON.stringify({ windows: found });
+  try {
+    callDBus(CAP_SERVICE, CAP_PATH, CAP_IFACE, "Send", payload);
+  } catch (e) { vlog("search: callback error", e); }
+  try {
+    callDBus("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript", SCRIPT_NAME);
+  } catch (e) {}
+}
+
+search();
+`, cfg.ScriptName, scriptNameJSON, targetIDJSON, targetAppJSON, targetMatchJSON,
+		cfg.Verbose, serviceJSON, pathJSON, ifaceJSON)
+}
+
+func generateWindowActionJS(cfg jsWindowActionConfig) string {
+	scriptNameJSON := mustJSONString(cfg.ScriptName)
+	targetIDJSON := mustJSONString(cfg.Selector.ID)
+	targetAppJSON := mustJSONString(cfg.Selector.App)
+	targetMatchJSON := mustJSONString(cfg.Selector.Match)
+	actionJSON := mustJSONString(cfg.Action)
+	callbackServiceJSON := mustJSONString(cfg.CallbackService)
+	callbackTokenJSON := mustJSONString(cfg.CallbackToken)
+
+	return fmt.Sprintf(`// Auto-generated window action script: %s
+var SCRIPT_NAME = %s;
+var TARGET_ID = %s;
+var TARGET_APP = %s;
+var TARGET_MATCH = %s;
+var ACTION = %s;
+var APPLY_ALL = %v;
+var VERBOSE = %v;
+var CALLBACK_SERVICE = %s;
+var CALLBACK_TOKEN = %s;
+var CALLBACK_PATH = "/io/github/kwinl/Place";
+var CALLBACK_IFACE = "io.github.kwinl.Place";
+
+function vlog() {
+  if (!VERBOSE) return;
+  var msg = "[kwinl] ";
+  for (var i = 0; i < arguments.length; i++) msg += arguments[i] + " ";
+  print(msg);
+}
+
+function idOf(w) { return "" + w.internalId; }
+
+function windowIds(w) {
+  var ids = [];
+  function add(v) {
+    if (v === undefined || v === null) return;
+    var s = ("" + v).trim();
+    if (s === "") return;
+    for (var i = 0; i < ids.length; i++) {
+      if (ids[i] === s) return;
+    }
+    ids.push(s);
+  }
+
+  try { add(w.desktopFileName); } catch (e) {}
+  try { add(w.resourceClass); } catch (e) {}
+  try { add(w.resourceName); } catch (e) {}
+  try { add(w.appId); } catch (e) {}
+  return ids;
+}
+
+function appTargetMatches(id, target) {
+  if (!id || !target) return false;
+  if (id === target) return true;
+  if (id === (target + ".desktop")) return true;
+  if (id.endsWith("/" + target + ".desktop")) return true;
+  if (id.endsWith("/" + target)) return true;
+
+  var idLower = id.toLowerCase();
+  var targetLower = target.toLowerCase();
+  if (idLower === targetLower) return true;
+  if (idLower === (targetLower + ".desktop")) return true;
+  if (idLower.endsWith("/" + targetLower + ".desktop")) return true;
+  if (idLower.endsWith("/" + targetLower)) return true;
+
+  function stripPathAndDesktop(s) {
+    var out = s;
+    var slash = out.lastIndexOf("/");
+    if (slash >= 0) out = out.slice(slash + 1);
+    if (out.endsWith(".desktop")) out = out.slice(0, -8);
+    return out;
+  }
+
+  function lastSegment(s) {
+    var dot = s.lastIndexOf(".");
+    if (dot >= 0 && dot + 1 < s.length) return s.slice(dot + 1);
+    return s;
+  }
+
+  function stripInstanceSuffix(s) {
+    return s.replace(/-[0-9]+$/, "");
+  }
+
+  var idNorm = stripPathAndDesktop(idLower);
+  var targetNorm = stripPathAndDesktop(targetLower);
+  if (idNorm === targetNorm) return true;
+
+  var idTail = stripInstanceSuffix(lastSegment(idNorm));
+  var targetTail = stripInstanceSuffix(lastSegment(targetNorm));
+  if (idTail !== "" && idTail === targetTail) return true;
+
+  if (idNorm.startsWith(targetNorm + "-")) return true;
+  if (targetNorm.startsWith(idNorm + "-")) return true;
+  return false;
+}
+
+function isManageable(w) {
+  if (!w) return false;
+  if (w.deleted) return false;
+  if (w.specialWindow) return false;
+  if (w.popupWindow) return false;
+  if (w.dock) return false;
+  if (w.desktopWindow) return false;
+  return true;
+}
+
+function windowMatches(w) {
+  if (!isManageable(w)) return false;
+
+  var idOK = TARGET_ID === "";
+  if (TARGET_ID !== "") idOK = idOf(w) === TARGET_ID;
+
+  var appOK = TARGET_APP === "";
+  var ids = windowIds(w);
+  if (TARGET_APP !== "") {
+    for (var i = 0; i < ids.length; i++) {
+      if (appTargetMatches(ids[i], TARGET_APP)) {
+        appOK = true;
+        break;
+      }
+    }
+  }
+
+  var matchOK = TARGET_MATCH === "";
+  if (TARGET_MATCH !== "") {
+    try {
+      var re = new RegExp(TARGET_MATCH);
+      matchOK = re.test(w.caption || "");
+    } catch (e) { vlog("windowMatches: regex error", e); }
+  }
+
+  return idOK && appOK && matchOK;
+}
+
+function geometryString(w) {
+  try {
+    var g = w.frameGeometry;
+    return g.x + "," + g.y + "," + g.width + "," + g.height;
+  } catch (e) {
+    return "";
+  }
+}
+
+function notify(success, w, message) {
+  if (!CALLBACK_SERVICE) return;
+  var windowID = "";
+  var caption = "";
+  var geom = "";
+  if (w) {
+    try { windowID = "" + w.internalId; } catch (e) {}
+    try { caption = "" + (w.caption || ""); } catch (e) {}
+    geom = geometryString(w);
+  }
+
+  try {
+    callDBus(CALLBACK_SERVICE, CALLBACK_PATH, CALLBACK_IFACE, "Placed",
+             CALLBACK_TOKEN, success, windowID, caption, geom, "" + message);
+    vlog("notify: sent callback success=", success, "message=", message);
+  } catch (e) { vlog("notify: error", e); }
+}
+
+function finish() {
+  try {
+    callDBus("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript", SCRIPT_NAME);
+  } catch (e) { vlog("finish: unload error", e); }
+}
+
+function activateWindow(w) {
+  try { if (w.minimized) w.minimized = false; } catch (e) {}
+  workspace.activeWindow = w;
+}
+
+function raiseWindow(w) {
+  try { if (w.minimized) w.minimized = false; } catch (e) {}
+  try { workspace.activeWindow = w; } catch (e) {}
+  if (typeof workspace.raiseWindow === "function") {
+    workspace.raiseWindow(w);
+    return;
+  }
+  if (typeof workspace.slotWindowRaise === "function") {
+    workspace.slotWindowRaise();
+  }
+}
+
+function lowerWindow(w) {
+  try { workspace.activeWindow = w; } catch (e) {}
+  if (typeof workspace.slotWindowLower === "function") {
+    workspace.slotWindowLower();
+    return;
+  }
+  w.keepBelow = true;
+}
+
+function closeWindow(w) {
+  if (typeof w.closeWindow === "function") {
+    w.closeWindow();
+    return;
+  }
+  workspace.activeWindow = w;
+  workspace.slotWindowClose();
+}
+
+function applyAction(w) {
+  switch (ACTION) {
+    case "activate":
+      activateWindow(w);
+      return;
+    case "raise":
+      raiseWindow(w);
+      return;
+    case "lower":
+      lowerWindow(w);
+      return;
+    case "minimize":
+      w.minimized = true;
+      return;
+    case "unminimize":
+      w.minimized = false;
+      return;
+    case "toggle-minimize":
+      w.minimized = !w.minimized;
+      return;
+    case "keep-above":
+      w.keepBelow = false;
+      w.keepAbove = true;
+      return;
+    case "keep-below":
+      w.keepAbove = false;
+      w.keepBelow = true;
+      return;
+    case "unset-keep-above":
+      w.keepAbove = false;
+      return;
+    case "unset-keep-below":
+      w.keepBelow = false;
+      return;
+    case "toggle-keep-above":
+      w.keepBelow = false;
+      w.keepAbove = !w.keepAbove;
+      return;
+    case "toggle-keep-below":
+      w.keepAbove = false;
+      w.keepBelow = !w.keepBelow;
+      return;
+    case "clear-stacking":
+      w.keepAbove = false;
+      w.keepBelow = false;
+      return;
+    case "close":
+      closeWindow(w);
+      return;
+    default:
+      throw "unknown action: " + ACTION;
+  }
+}
+
+function runAction() {
+  var wins = workspace.stackingOrder || [];
+  var first = null;
+  var applied = 0;
+
+  for (var i = wins.length - 1; i >= 0; i--) {
+    var w = wins[i];
+    if (!windowMatches(w)) continue;
+    if (!first) first = w;
+
+    try {
+      applyAction(w);
+      applied++;
+    } catch (e) {
+      notify(false, w, "failed to apply " + ACTION + ": " + e);
+      finish();
+      return;
+    }
+
+    if (!APPLY_ALL) break;
+  }
+
+  if (applied === 0) {
+    notify(false, null, "no matching window found");
+    finish();
+    return;
+  }
+
+  notify(true, first, "applied " + ACTION + " to " + applied + " window(s)");
+  finish();
+}
+
+runAction();
+`, cfg.ScriptName, scriptNameJSON, targetIDJSON, targetAppJSON, targetMatchJSON,
+		actionJSON, cfg.All, cfg.Verbose, callbackServiceJSON, callbackTokenJSON)
 }
 
 func generateJS(cfg jsPlacementConfig) string {
