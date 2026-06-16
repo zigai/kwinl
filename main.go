@@ -32,6 +32,7 @@ const (
 	dbusScriptIface    = "org.kde.kwin.Script"
 	scriptObjectPrefix = "/Scripting/Script"
 	defaultTimeoutSec  = 8
+	layoutVersion      = "1.0.0"
 
 	exitCodeInternal     = 1
 	exitCodeUsage        = 2
@@ -2450,7 +2451,7 @@ func buildTemplateFromCapturePayload(payload string) (Template, error) {
 		return Template{}, &ValidationError{Field: "capture", Value: "", Message: "no capturable windows found"}
 	}
 
-	return Template{Version: version, Timeout: "", Presets: presets}, nil
+	return Template{Version: layoutVersion, Timeout: "", Presets: presets}, nil
 }
 
 func warnCaptureNonLaunchablePresets(template Template) {
