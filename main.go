@@ -13,7 +13,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -4784,28 +4786,7 @@ func launchCommand(cmdSlice []string) (*exec.Cmd, error) {
 		"GIO_LAUNCHED_DESKTOP_FILE_PID",
 	)
 
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Chroot:                     "",
-		Credential:                 nil,
-		Ptrace:                     false,
-		Setsid:                     false,
-		Setpgid:                    true,
-		Setctty:                    false,
-		Noctty:                     false,
-		Ctty:                       0,
-		Foreground:                 false,
-		Pgid:                       0,
-		Pdeathsig:                  0,
-		Cloneflags:                 0,
-		Unshareflags:               0,
-		UidMappings:                nil,
-		GidMappings:                nil,
-		GidMappingsEnableSetgroups: false,
-		AmbientCaps:                nil,
-		UseCgroupFD:                false,
-		CgroupFD:                   0,
-		PidFD:                      nil,
-	}
+	cmd.SysProcAttr = processGroupSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start command %q: %w", expanded[0], err)
 	}
@@ -4900,19 +4881,49 @@ func waitAndCleanup(timeout time.Duration, cmds []*exec.Cmd) error {
 	}
 }
 
-func signalProcessGroups(cmds []*exec.Cmd, sig os.Signal) {
-	ss, ok := sig.(syscall.Signal)
-	if !ok {
-		return
+func processGroupSysProcAttr() *syscall.SysProcAttr {
+	attr := new(syscall.SysProcAttr)
+
+	setpgid := reflect.ValueOf(attr).Elem().FieldByName("Setpgid")
+	if !setpgid.IsValid() || !setpgid.CanSet() || setpgid.Kind() != reflect.Bool {
+		return nil
 	}
 
+	setpgid.SetBool(true)
+
+	return attr
+}
+
+func signalProcessGroups(cmds []*exec.Cmd, sig os.Signal) {
 	for _, cmd := range cmds {
 		if cmd == nil || cmd.Process == nil {
 			continue
 		}
 
-		_ = syscall.Kill(-cmd.Process.Pid, ss)
+		if runtime.GOOS == "windows" {
+			_ = cmd.Process.Kill()
+			continue
+		}
+
+		if cmdUsesProcessGroup(cmd) {
+			processGroup, err := os.FindProcess(-cmd.Process.Pid)
+			if err == nil && processGroup.Signal(sig) == nil {
+				continue
+			}
+		}
+
+		_ = cmd.Process.Signal(sig)
 	}
+}
+
+func cmdUsesProcessGroup(cmd *exec.Cmd) bool {
+	if cmd.SysProcAttr == nil {
+		return false
+	}
+
+	setpgid := reflect.ValueOf(cmd.SysProcAttr).Elem().FieldByName("Setpgid")
+
+	return setpgid.IsValid() && setpgid.Kind() == reflect.Bool && setpgid.Bool()
 }
 
 func cleanupStartedCommands(cmds []*exec.Cmd) {
