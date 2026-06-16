@@ -405,7 +405,9 @@ func (e *ScriptPathError) Error() string {
 }
 
 var (
-	version = "1.0.0"
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
 
 	verboseFlag bool
 
@@ -495,7 +497,7 @@ var rootCmd = &cobra.Command{
 	Short: "KWin window placement tool",
 	Long: `kwinl loads temporary KWin scripts via D-Bus that intercept newly created
 windows and move/resize them to the requested geometry.`,
-	Version: version,
+	Version: fmt.Sprintf("kwinl %s (commit: %s, built: %s)", version, commit, date),
 }
 
 var placeCmd = &cobra.Command{
