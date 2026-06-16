@@ -24,12 +24,18 @@ profile.cov
 go.work
 go.work.sum
 
+# Built binaries
+kwinl
+kwin-layout
+kwin-place
+
+# GoReleaser
+dist/
+
 # env file
 .env
 
 # Editor/IDE
 # .idea/
 # .vscode/
-kwin-layout
-kwin-place
 example*.yaml
