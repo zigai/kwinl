@@ -20,11 +20,17 @@ Declarative window placement for KWin: launch programs into predefined geometrie
 
 ## Installation
 
+### Go install
+
 ```bash
 go install github.com/zigai/kwinl@latest
 ```
 
-Or build from source:
+### Prebuilt binaries
+
+Download release archives and Linux `.deb`/`.rpm` packages from the [GitHub Releases page](https://github.com/zigai/kwinl/releases/latest).
+
+### Build from source
 
 ```bash
 git clone https://github.com/zigai/kwinl.git
