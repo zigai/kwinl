@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -696,16 +697,7 @@ func TestLaunchCommandReapsFastExitingChild(t *testing.T) {
 		t.Fatalf("launch command: %v", err)
 	}
 
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if cmd.ProcessState != nil {
-			return
-		}
-
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	t.Fatalf("expected child process to be reaped, process state is still nil for pid %d", cmd.Process.Pid)
+	waitForLinuxProcessReaped(t, cmd.Process.Pid, 500*time.Millisecond)
 }
 
 func TestCleanupStartedCommandsTerminatesStartedProcesses(t *testing.T) {
@@ -720,16 +712,24 @@ func TestCleanupStartedCommandsTerminatesStartedProcesses(t *testing.T) {
 
 	cleanupStartedCommands([]*exec.Cmd{cmd})
 
-	deadline := time.Now().Add(2 * time.Second)
+	waitForLinuxProcessReaped(t, cmd.Process.Pid, 2*time.Second)
+}
+
+func waitForLinuxProcessReaped(t *testing.T, pid int, timeout time.Duration) {
+	t.Helper()
+
+	procPath := "/proc/" + strconv.Itoa(pid)
+
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if cmd.ProcessState != nil {
+		if _, err := os.Stat(procPath); errors.Is(err, os.ErrNotExist) {
 			return
 		}
 
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	t.Fatalf("expected cleanup to terminate started child, process state is still nil for pid %d", cmd.Process.Pid)
+	t.Fatalf("expected child process to be reaped, process still exists for pid %d", pid)
 }
 
 func TestValidateCleanupDiscoveryReturnsDBusErrorOnDiscoveryFailure(t *testing.T) {
