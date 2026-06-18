@@ -5,9 +5,18 @@ goreleaser_version := "v2.13.3"
 @_:
   just --list
 
+# Run all non-mutating checks
+check: lint test race
+    go mod tidy -diff
+    go build -o /dev/null .
+
 # Run all tests
 test:
     go test ./...
+
+# Run tests with the Go race detector
+race:
+    go test -race ./...
 
 # Run golangci-lint with --fix
 fix:
