@@ -148,9 +148,7 @@ linters:
       enable-all: true
       disable:
         - fieldalignment
-      settings:
-        shadow:
-          strict: true
+        - shadow
 
     mnd:
       ignored-numbers:
@@ -213,9 +211,6 @@ linters:
 
       - path: "main\\.go"
         linters: [mnd]
-
-      - text: 'shadow: declaration of "err" shadows declaration at'
-        linters: [govet]
 
       - source: "cobra\\."
         linters: [exhaustruct]
