@@ -32,6 +32,11 @@ kwin-place
 # GoReleaser
 dist/
 
+# Node / TypeScript spikes
+node_modules/
+spikes/**/node_modules/
+spikes/**/dist/
+
 # env file
 .env
 
