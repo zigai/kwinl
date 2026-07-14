@@ -6,7 +6,9 @@ Declarative window placement for KWin: launch programs into predefined geometrie
 
 - Place: launch a single app and move/resize its newly created window to a specific geometry
 - Launch: apply a YAML/JSON layout to start and arrange multiple apps at once
-- Windows: search existing windows and apply actions like activate/raise/lower/minimize
+- Windows: search existing windows, move/resize them, and apply actions like activate/raise/lower/minimize
+- Desktops: list, inspect, and switch KWin virtual desktops
+- Mouse: query pointer location/hovered windows and send click/scroll input through external input tools
 - Layouts: manage named layouts stored in `~/.config/kwinl`
 - Capture: snapshot current windows into a reusable YAML/JSON layout template
 - Validate: check a layout file for errors without launching anything
@@ -17,6 +19,8 @@ Declarative window placement for KWin: launch programs into predefined geometrie
 
 - KDE Plasma with KWin
 - Session D-Bus access
+- Optional for `kwinl mouse click`: `ydotool` or `xdotool`
+- Optional for `kwinl mouse scroll`: `xdotool`
 
 ## Installation
 
@@ -114,14 +118,15 @@ Notes:
 #### kwinl windows
 
 ```
-Search and control existing KWin windows. Selectors are combined with AND logic:
-when --id, --app, and --match are provided, all provided selectors must match
-the same window.
+Search and control existing KWin windows. Selectors are combined with AND logic
+by default; use --any to match any provided selector.
 
 Search examples:
   kwinl windows list
   kwinl windows list --app code
   kwinl windows list --match "Firefox"
+  kwinl windows list --class "Navigator" --state minimized
+  kwinl windows list --desktop current --monitor DP-1 --limit 3
   kwinl windows list --json
 
 Action examples:
@@ -131,6 +136,15 @@ Action examples:
   kwinl windows keep-above --app org.kde.konsole --all
   kwinl windows unset-keep-above --id 123
   kwinl windows minimize --match "Slack" --all
+
+Geometry examples:
+  kwinl windows move --id 123 --pos 100,100
+  kwinl windows resize --app code --size 50%,100% --all
+  kwinl windows set-geometry --match "Firefox" --geom 0,0,1200,800
+
+Selector flags:
+  --id, --app/-a, --match/-m, --class, --desktop, --monitor, --state,
+  --any, --limit
 
 Available actions:
   activate, raise, lower, minimize, unminimize, toggle-minimize,
@@ -143,9 +157,54 @@ Search output columns:
 Action behavior:
   - Actions target the topmost matching window by default.
   - Use --all to apply an action to every matching window.
+  - Use --limit with --all to cap how many matching windows are affected.
   - If no matching window exists, action commands exit with code 30.
 
 The old "search" spelling remains available as an alias for "list".
+```
+
+#### kwinl desktops
+
+```
+Inspect and change KWin virtual desktops.
+
+Examples:
+  kwinl desktops list
+  kwinl desktops list --json
+  kwinl desktops current
+  kwinl desktops count
+  kwinl desktops set 2
+  kwinl desktops set "Desktop 2"
+
+Text output:
+  - list: index, id, name, current marker
+  - current: index, id, name
+  - count: one integer
+```
+
+#### kwinl mouse
+
+```
+Inspect the pointer and send basic pointer input.
+
+Query examples:
+  kwinl mouse location
+  kwinl mouse location --json
+  kwinl mouse hovered-window
+  kwinl mouse hovered-window --all --json
+
+Input examples:
+  kwinl mouse click
+  kwinl mouse click --button middle --repeat 2 --at 500,400
+  kwinl mouse left-click --at 100,100
+  kwinl mouse right-click
+  kwinl mouse scroll --amount 5
+  kwinl mouse scroll --amount -3 --at 500,400
+
+Notes:
+  - Location and hovered-window use KWin scripting.
+  - Click uses ydotool when available, otherwise xdotool.
+  - Scroll uses xdotool wheel-button events.
 ```
 
 #### kwinl layouts list
