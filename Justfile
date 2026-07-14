@@ -2,8 +2,12 @@
 golangci_lint_version := "v2.12.2"
 goreleaser_version := "v2.13.3"
 
-@_:
-  just --list
+_:
+    @just help
+
+# List available commands
+help:
+    @just --list
 
 # Run all non-mutating checks
 check: lint test race
