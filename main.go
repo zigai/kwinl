@@ -54,6 +54,12 @@ const (
 	fieldLayout = "layout"
 	formatJSON  = "json"
 
+	geometryReasonMustBePositive = "must be > 0"
+
+	mouseBackendAuto    = "auto"
+	mouseBackendYdotool = "ydotool"
+	mouseBackendXdotool = "xdotool"
+
 	windowActionActivate       = "activate"
 	windowActionRaise          = "raise"
 	windowActionLower          = "lower"
@@ -77,6 +83,8 @@ var (
 	errNoCapturePayloadReceived                  = errors.New("no payload received from KWin script")
 	errNoPlacementCallbackReceived               = errors.New("no placement callback received")
 	errNoMatchingWindow                          = errors.New("no matching window found")
+	errNoCurrentDesktop                          = errors.New("no current desktop reported by KWin")
+	errNoMouseInputBackend                       = errors.New("no mouse input backend found; install ydotool or xdotool")
 	errSplitCommandUnfinishedEscape              = errors.New("unfinished escape at end of command")
 	errSplitCommandUnterminatedQuote             = errors.New("unterminated quote in command")
 	errInterruptedBySIGINT                       = errors.New("interrupted by SIGINT")
@@ -433,9 +441,30 @@ var (
 	windowIDFlag      string
 	windowAppFlag     string
 	windowMatchFlag   string
+	windowClassFlag   string
+	windowDesktopFlag string
+	windowMonitorFlag string
 	windowTimeoutFlag string
+	windowStateFlags  []string
+	windowLimitFlag   int
 	windowAllFlag     bool
 	windowJSONFlag    bool
+	windowAnyFlag     bool
+	windowPosFlag     string
+	windowSizeFlag    string
+	windowGeomFlag    string
+
+	desktopJSONFlag    bool
+	desktopTimeoutFlag string
+
+	mouseJSONFlag         bool
+	mouseAllFlag          bool
+	mouseTimeoutFlag      string
+	mouseButtonFlag       string
+	mouseRepeatFlag       int
+	mouseAtFlag           string
+	mouseBackendFlag      string
+	mouseScrollAmountFlag int
 
 	captureTimeoutFlag      string
 	captureInferCommandFlag bool
@@ -452,9 +481,15 @@ type captureOptions struct {
 }
 
 type windowSelector struct {
-	ID    string
-	App   string
-	Match string
+	ID      string
+	App     string
+	Match   string
+	Class   string
+	Desktop string
+	Monitor string
+	States  []string
+	Any     bool
+	Limit   int
 }
 
 type windowSearchConfig struct {
@@ -476,14 +511,48 @@ type windowActionConfig struct {
 	JSFile     string
 }
 
+type windowGeometryMode string
+
+const (
+	windowGeometryModeMove   windowGeometryMode = "move"
+	windowGeometryModeResize windowGeometryMode = "resize"
+	windowGeometryModeSet    windowGeometryMode = "set-geometry"
+)
+
+type pointGeometry struct {
+	X GeomValue
+	Y GeomValue
+}
+
+type sizeGeometry struct {
+	W GeomValue
+	H GeomValue
+}
+
+type windowGeometryConfig struct {
+	Selector   windowSelector
+	Mode       windowGeometryMode
+	All        bool
+	Timeout    time.Duration
+	Point      pointGeometry
+	Size       sizeGeometry
+	Geom       ParsedGeometry
+	ScriptName string
+	TempDir    string
+	JSFile     string
+}
+
 type windowInfo struct {
 	ID            string   `json:"id"`
 	App           string   `json:"app"`
 	AppIDs        []string `json:"appIds"`
 	Caption       string   `json:"caption"`
+	ResourceClass string   `json:"resourceClass,omitempty"`
+	ResourceName  string   `json:"resourceName,omitempty"`
 	Geometry      string   `json:"geometry"`
 	Monitor       string   `json:"monitor"`
 	Desktop       string   `json:"desktop"`
+	DesktopIndex  int      `json:"desktopIndex,omitempty"`
 	Minimized     bool     `json:"minimized"`
 	KeepAbove     bool     `json:"keepAbove"`
 	KeepBelow     bool     `json:"keepBelow"`
@@ -493,6 +562,31 @@ type windowInfo struct {
 
 type windowSearchPayload struct {
 	Windows []windowInfo `json:"windows"`
+}
+
+type desktopInfo struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Index            int    `json:"index"`
+	X11DesktopNumber int    `json:"x11DesktopNumber,omitempty"`
+	Current          bool   `json:"current"`
+}
+
+type desktopPayload struct {
+	Desktops []desktopInfo `json:"desktops,omitempty"`
+	Current  *desktopInfo  `json:"current,omitempty"`
+	Count    int           `json:"count,omitempty"`
+}
+
+type mouseLocationPayload struct {
+	X       int    `json:"x"`
+	Y       int    `json:"y"`
+	Monitor string `json:"monitor"`
+}
+
+type mousePoint struct {
+	X int
+	Y int
 }
 
 var rootCmd = &cobra.Command{
@@ -585,6 +679,159 @@ all matching windows.`,
 	addWindowActionFlags(cmd)
 
 	return cmd
+}
+
+func newWindowsGeometryCmd(mode windowGeometryMode, short string) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   string(mode) + " [flags]",
+		Short: short,
+		Long: `Find existing KWin windows by internal ID, application ID, title regex,
+class regex, desktop, monitor, or state, then change the geometry of the topmost
+match. Use --all to apply the change to every matching window.`,
+		Example:       windowGeometryExample(mode),
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runWindowsGeometry(mode)
+		},
+	}
+
+	addWindowGeometryFlags(cmd, mode)
+
+	return cmd
+}
+
+func windowGeometryExample(mode windowGeometryMode) string {
+	switch mode {
+	case windowGeometryModeMove:
+		return `  kwinl windows move --id 123 --pos 100,100
+  kwinl windows move --app code --pos 10%,0 --all
+  kwinl windows move --match "Firefox" --pos 0,0 --limit 2 --all`
+	case windowGeometryModeResize:
+		return `  kwinl windows resize --id 123 --size 800,600
+  kwinl windows resize --app code --size 50%,100% --all
+  kwinl windows resize --match "Firefox" --size 1200,800 --limit 2 --all`
+	case windowGeometryModeSet:
+		return `  kwinl windows set-geometry --id 123 --geom 100,100,800,600
+  kwinl windows set-geometry --app code --geom 0,0,50%,100% --all
+  kwinl windows set-geometry --match "Firefox" --geom 0,0,1200,800 --limit 2 --all`
+	default:
+		return ""
+	}
+}
+
+var (
+	windowsMoveCmd        = newWindowsGeometryCmd(windowGeometryModeMove, "Move existing windows")
+	windowsResizeCmd      = newWindowsGeometryCmd(windowGeometryModeResize, "Resize existing windows")
+	windowsSetGeometryCmd = newWindowsGeometryCmd(windowGeometryModeSet, "Set existing window geometry")
+)
+
+var desktopsCmd = &cobra.Command{
+	Use:   "desktops",
+	Short: "Inspect and change KWin virtual desktops",
+}
+
+var desktopsListCmd = &cobra.Command{
+	Use:           "list",
+	Short:         "List virtual desktops",
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runDesktopsList,
+}
+
+var desktopsCurrentCmd = &cobra.Command{
+	Use:           "current",
+	Short:         "Print the current virtual desktop",
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runDesktopsCurrent,
+}
+
+var desktopsCountCmd = &cobra.Command{
+	Use:           "count",
+	Short:         "Print the virtual desktop count",
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runDesktopsCount,
+}
+
+var desktopsSetCmd = &cobra.Command{
+	Use:           "set <name|id|index>",
+	Short:         "Switch to a virtual desktop",
+	Args:          cobra.ExactArgs(1),
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runDesktopsSet,
+}
+
+var mouseCmd = &cobra.Command{
+	Use:   "mouse",
+	Short: "Inspect and synthesize pointer input",
+}
+
+var mouseLocationCmd = &cobra.Command{
+	Use:           "location",
+	Short:         "Print the current pointer location",
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runMouseLocation,
+}
+
+var mouseHoveredWindowCmd = &cobra.Command{
+	Use:           "hovered-window",
+	Aliases:       []string{"window"},
+	Short:         "Print windows below the pointer",
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runMouseHoveredWindow,
+}
+
+var mouseClickCmd = &cobra.Command{
+	Use:           "click",
+	Short:         "Click at the current or requested pointer location",
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runMouseClick("")
+	},
+}
+
+var mouseLeftClickCmd = &cobra.Command{
+	Use:           "left-click",
+	Short:         "Left click at the current or requested pointer location",
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runMouseClick("left")
+	},
+}
+
+var mouseRightClickCmd = &cobra.Command{
+	Use:           "right-click",
+	Short:         "Right click at the current or requested pointer location",
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runMouseClick("right")
+	},
+}
+
+var mouseScrollCmd = &cobra.Command{
+	Use:           "scroll --amount <signed-ticks>",
+	Short:         "Scroll at the current or requested pointer location",
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runMouseScroll,
 }
 
 var layoutsCmd = &cobra.Command{
@@ -681,6 +928,12 @@ func addWindowSelectorFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&windowIDFlag, "id", "", "KWin internal window ID to match")
 	cmd.Flags().StringVarP(&windowAppFlag, "app", "a", "", "application ID to match")
 	cmd.Flags().StringVarP(&windowMatchFlag, "match", "m", "", "regex pattern to match window title")
+	cmd.Flags().StringVar(&windowClassFlag, "class", "", "regex pattern to match window resource class or name")
+	cmd.Flags().StringVar(&windowDesktopFlag, "desktop", "", "virtual desktop to match (1-based index, name, id, or current)")
+	cmd.Flags().StringVar(&windowMonitorFlag, "monitor", "", "monitor to match (index like 0, 1 or name like DP-1)")
+	cmd.Flags().StringArrayVar(&windowStateFlags, "state", nil, "window state to match; repeat for multiple states")
+	cmd.Flags().BoolVar(&windowAnyFlag, "any", false, "match any provided selector instead of requiring all selectors")
+	cmd.Flags().IntVar(&windowLimitFlag, "limit", 0, "maximum number of matching windows to return or affect (0 means unlimited)")
 }
 
 func addWindowSearchFlags(cmd *cobra.Command) {
@@ -693,6 +946,47 @@ func addWindowActionFlags(cmd *cobra.Command) {
 	addWindowSelectorFlags(cmd)
 	cmd.Flags().BoolVar(&windowAllFlag, "all", false, "apply action to all matching windows")
 	cmd.Flags().StringVarP(&windowTimeoutFlag, "timeout", "t", "2s", "timeout duration (e.g., 2s, 500ms)")
+}
+
+func addWindowGeometryFlags(cmd *cobra.Command, mode windowGeometryMode) {
+	addWindowActionFlags(cmd)
+
+	switch mode {
+	case windowGeometryModeMove:
+		cmd.Flags().StringVar(&windowPosFlag, "pos", "", "target position as x,y")
+		must(cmd.MarkFlagRequired("pos"))
+	case windowGeometryModeResize:
+		cmd.Flags().StringVar(&windowSizeFlag, "size", "", "target size as width,height")
+		must(cmd.MarkFlagRequired("size"))
+	case windowGeometryModeSet:
+		cmd.Flags().StringVarP(&windowGeomFlag, "geom", "g", "", "target geometry as x,y,width,height")
+		must(cmd.MarkFlagRequired("geom"))
+	}
+}
+
+func addDesktopQueryFlags(cmd *cobra.Command) {
+	cmd.Flags().BoolVar(&desktopJSONFlag, "json", false, "write result as JSON")
+	cmd.Flags().StringVarP(&desktopTimeoutFlag, "timeout", "t", "2s", "timeout duration (e.g., 2s, 500ms)")
+}
+
+func addMouseQueryFlags(cmd *cobra.Command) {
+	cmd.Flags().BoolVar(&mouseJSONFlag, "json", false, "write result as JSON")
+	cmd.Flags().StringVarP(&mouseTimeoutFlag, "timeout", "t", "2s", "timeout duration (e.g., 2s, 500ms)")
+}
+
+func addMouseInputFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&mouseAtFlag, "at", "", "move pointer to x,y before sending input")
+	cmd.Flags().StringVar(&mouseBackendFlag, "backend", mouseBackendAuto, "input backend: auto, ydotool, or xdotool")
+}
+
+func addMouseClickFlags(cmd *cobra.Command, includeButton bool) {
+	addMouseInputFlags(cmd)
+
+	if includeButton {
+		cmd.Flags().StringVar(&mouseButtonFlag, "button", "left", "button to click: left, right, or middle")
+	}
+
+	cmd.Flags().IntVar(&mouseRepeatFlag, "repeat", 1, "number of clicks to send")
 }
 
 //nolint:gochecknoinits // cobra setup uses init for flag wiring.
@@ -722,6 +1016,22 @@ func init() {
 
 	addWindowSearchFlags(windowsSearchCmd)
 
+	addDesktopQueryFlags(desktopsListCmd)
+	addDesktopQueryFlags(desktopsCurrentCmd)
+	desktopsCountCmd.Flags().StringVarP(&desktopTimeoutFlag, "timeout", "t", "2s", "timeout duration (e.g., 2s, 500ms)")
+	desktopsSetCmd.Flags().StringVarP(&desktopTimeoutFlag, "timeout", "t", "2s", "timeout duration (e.g., 2s, 500ms)")
+
+	addMouseQueryFlags(mouseLocationCmd)
+	addMouseQueryFlags(mouseHoveredWindowCmd)
+	mouseHoveredWindowCmd.Flags().BoolVar(&mouseAllFlag, "all", false, "return all manageable windows below the pointer")
+	addMouseClickFlags(mouseClickCmd, true)
+	addMouseClickFlags(mouseLeftClickCmd, false)
+	addMouseClickFlags(mouseRightClickCmd, false)
+	mouseScrollCmd.Flags().StringVar(&mouseAtFlag, "at", "", "move pointer to x,y before sending input")
+	mouseScrollCmd.Flags().StringVar(&mouseBackendFlag, "backend", mouseBackendAuto, "input backend: auto or xdotool")
+	mouseScrollCmd.Flags().IntVar(&mouseScrollAmountFlag, "amount", 0, "signed scroll ticks; positive scrolls down, negative scrolls up")
+	must(mouseScrollCmd.MarkFlagRequired("amount"))
+
 	captureCmd.Flags().StringVarP(&captureTimeoutFlag, "timeout", "t", "2s", "capture timeout (e.g., 2s, 500ms)")
 	captureCmd.Flags().BoolVar(&captureInferCommandFlag, "infer-command", true, "infer a best-effort launcher command using gtk-launch")
 	captureCmd.Flags().BoolVarP(&captureIncludeUnknown, "include-unknown", "u", false, "include windows without desktopFileName/appId (matched by title; may require manual command)")
@@ -749,10 +1059,27 @@ func init() {
 	windowsCmd.AddCommand(newWindowsActionCmd(windowActionToggleBelow, "Toggle keep-below on existing windows"))
 	windowsCmd.AddCommand(newWindowsActionCmd(windowActionClearStacking, "Clear keep-above and keep-below"))
 	windowsCmd.AddCommand(newWindowsActionCmd(windowActionClose, "Close existing windows"))
+	windowsCmd.AddCommand(windowsMoveCmd)
+	windowsCmd.AddCommand(windowsResizeCmd)
+	windowsCmd.AddCommand(windowsSetGeometryCmd)
+
+	desktopsCmd.AddCommand(desktopsListCmd)
+	desktopsCmd.AddCommand(desktopsCurrentCmd)
+	desktopsCmd.AddCommand(desktopsCountCmd)
+	desktopsCmd.AddCommand(desktopsSetCmd)
+
+	mouseCmd.AddCommand(mouseLocationCmd)
+	mouseCmd.AddCommand(mouseHoveredWindowCmd)
+	mouseCmd.AddCommand(mouseClickCmd)
+	mouseCmd.AddCommand(mouseLeftClickCmd)
+	mouseCmd.AddCommand(mouseRightClickCmd)
+	mouseCmd.AddCommand(mouseScrollCmd)
 
 	rootCmd.AddCommand(placeCmd)
 	rootCmd.AddCommand(launchCmd)
 	rootCmd.AddCommand(windowsCmd)
+	rootCmd.AddCommand(desktopsCmd)
+	rootCmd.AddCommand(mouseCmd)
 	rootCmd.AddCommand(layoutsCmd)
 	rootCmd.AddCommand(captureCmd)
 	rootCmd.AddCommand(validateCmd)
@@ -1087,32 +1414,207 @@ func runWindowsAction(action string) error {
 	return waitForWindowAction(cfg.Timeout, recv.ch)
 }
 
-func parseWindowSelector(allowEmpty bool) (windowSelector, error) {
-	selector := windowSelector{
-		ID:    strings.TrimSpace(windowIDFlag),
-		App:   strings.TrimSpace(windowAppFlag),
-		Match: strings.TrimSpace(windowMatchFlag),
+func runGeneratedActionScript(scriptName, jsFile string, timeout time.Duration, render func(callbackService string) string) error {
+	conn, err := dbus.ConnectSessionBus()
+	if err != nil {
+		return newExitError(exitCodeDBusFailure, fmt.Errorf("cannot connect to session D-Bus: %w", err))
 	}
 
-	if !allowEmpty && selector.ID == "" && selector.App == "" && selector.Match == "" {
+	defer closeDBusConnWarn(conn)
+
+	recv, callbackService, err := initPlaceCallback(conn)
+	if err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(jsFile, []byte(render(callbackService)), 0o600); err != nil {
+		return fmt.Errorf("write generated action JS file %q: %w", jsFile, err)
+	}
+
+	scriptPath, err := loadWindowScriptPath(conn, jsFile, scriptName)
+	if err != nil {
+		return err
+	}
+
+	defer unloadScript(conn, scriptName)
+
+	if err := runScript(conn, scriptName, scriptPath); err != nil {
+		return newExitError(exitCodeLoadFailed, err)
+	}
+
+	return waitForWindowAction(timeout, recv.ch)
+}
+
+func runGeneratedCaptureScript(prefix string, timeout time.Duration, render func(scriptName, serviceName string) string) (string, error) {
+	scriptName := fmt.Sprintf("kwinl-%s-%d-%s", prefix, os.Getpid(), generateRandomSuffix())
+
+	tempDir, err := os.MkdirTemp("", "kwinl-"+prefix+"-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp dir: %w", err)
+	}
+
+	defer removeTempDirWarn(tempDir)
+
+	conn, err := dbus.ConnectSessionBus()
+	if err != nil {
+		return "", newExitError(exitCodeDBusFailure, fmt.Errorf("cannot connect to session D-Bus: %w", err))
+	}
+
+	defer closeDBusConnWarn(conn)
+
+	recv, serviceName, err := initCaptureCallback(conn)
+	if err != nil {
+		return "", err
+	}
+
+	jsFile := filepath.Join(tempDir, scriptName+".js")
+	if err := os.WriteFile(jsFile, []byte(render(scriptName, serviceName)), 0o600); err != nil {
+		return "", fmt.Errorf("write generated capture JS file %q: %w", jsFile, err)
+	}
+
+	scriptPath, err := loadWindowScriptPath(conn, jsFile, scriptName)
+	if err != nil {
+		return "", err
+	}
+
+	defer unloadScript(conn, scriptName)
+
+	if err := runScript(conn, scriptName, scriptPath); err != nil {
+		return "", newExitError(exitCodeLoadFailed, err)
+	}
+
+	return waitForCapturePayload(recv.ch, timeout)
+}
+
+func runWindowsGeometry(mode windowGeometryMode) error {
+	cfg, err := parseWindowGeometryConfig(mode)
+	if err != nil {
+		return err
+	}
+
+	defer removeTempDirWarn(cfg.TempDir)
+
+	return runGeneratedActionScript(
+		cfg.ScriptName,
+		cfg.JSFile,
+		cfg.Timeout,
+		func(callbackService string) string {
+			return generateWindowGeometryJS(jsWindowGeometryConfig{
+				ScriptName:      cfg.ScriptName,
+				Selector:        cfg.Selector,
+				Mode:            cfg.Mode,
+				All:             cfg.All,
+				Verbose:         verboseFlag,
+				CallbackService: callbackService,
+				CallbackToken:   cfg.ScriptName,
+				Point:           cfg.Point,
+				Size:            cfg.Size,
+				Geom:            cfg.Geom,
+			})
+		},
+	)
+}
+
+func parseWindowSelector(allowEmpty bool) (windowSelector, error) {
+	selector := windowSelector{
+		ID:      strings.TrimSpace(windowIDFlag),
+		App:     strings.TrimSpace(windowAppFlag),
+		Match:   strings.TrimSpace(windowMatchFlag),
+		Class:   strings.TrimSpace(windowClassFlag),
+		Desktop: strings.TrimSpace(windowDesktopFlag),
+		Monitor: strings.TrimSpace(windowMonitorFlag),
+		States:  normalizeWindowStates(windowStateFlags),
+		Any:     windowAnyFlag,
+		Limit:   windowLimitFlag,
+	}
+
+	if selector.Limit < 0 {
 		return windowSelector{}, &ValidationError{
-			Field:   "window",
-			Value:   "",
-			Message: "at least one of --id, --app, or --match is required",
+			Field:   "limit",
+			Value:   strconv.Itoa(selector.Limit),
+			Message: "must be >= 0",
 		}
 	}
 
-	if selector.Match != "" {
-		if _, err := regexp.Compile(selector.Match); err != nil {
-			return windowSelector{}, &ValidationError{
-				Field:   "match",
-				Value:   selector.Match,
-				Message: "invalid regex: " + err.Error(),
+	if !allowEmpty && !selector.HasSelectors() {
+		return windowSelector{}, &ValidationError{
+			Field:   "window",
+			Value:   "",
+			Message: "at least one selector is required",
+		}
+	}
+
+	if err := validateWindowRegexSelector("match", selector.Match); err != nil {
+		return windowSelector{}, err
+	}
+
+	if err := validateWindowRegexSelector("class", selector.Class); err != nil {
+		return windowSelector{}, err
+	}
+
+	if err := validateWindowStates(selector.States); err != nil {
+		return windowSelector{}, err
+	}
+
+	return selector, nil
+}
+
+func (s windowSelector) HasSelectors() bool {
+	return s.ID != "" ||
+		s.App != "" ||
+		s.Match != "" ||
+		s.Class != "" ||
+		s.Desktop != "" ||
+		s.Monitor != "" ||
+		len(s.States) > 0
+}
+
+func normalizeWindowStates(states []string) []string {
+	normalized := make([]string, 0, len(states))
+	seen := map[string]bool{}
+
+	for _, state := range states {
+		key := strings.TrimSpace(strings.ToLower(state))
+		if key == "" || seen[key] {
+			continue
+		}
+
+		seen[key] = true
+		normalized = append(normalized, key)
+	}
+
+	return normalized
+}
+
+func validateWindowRegexSelector(field, value string) error {
+	if value == "" {
+		return nil
+	}
+
+	if _, err := regexp.Compile(value); err != nil {
+		return &ValidationError{
+			Field:   field,
+			Value:   value,
+			Message: "invalid regex: " + err.Error(),
+		}
+	}
+
+	return nil
+}
+
+func validateWindowStates(states []string) error {
+	validStates := []string{"minimized", "fullscreen", "keep-above", "keep-below", "all-desktops"}
+	for _, state := range states {
+		if !slices.Contains(validStates, state) {
+			return &ValidationError{
+				Field:   "state",
+				Value:   state,
+				Message: "valid states: " + strings.Join(validStates, ", "),
 			}
 		}
 	}
 
-	return selector, nil
+	return nil
 }
 
 func parseWindowSearchConfig() (windowSearchConfig, error) {
@@ -1157,6 +1659,10 @@ func parseWindowActionConfig(action string) (windowActionConfig, error) {
 		return windowActionConfig{}, err
 	}
 
+	if err := validateWindowLimitForMutation(selector); err != nil {
+		return windowActionConfig{}, err
+	}
+
 	timeout, err := parseTimeout(windowTimeoutFlag)
 	if err != nil {
 		return windowActionConfig{}, err
@@ -1178,6 +1684,546 @@ func parseWindowActionConfig(action string) (windowActionConfig, error) {
 		TempDir:    tempDir,
 		JSFile:     filepath.Join(tempDir, scriptName+".js"),
 	}, nil
+}
+
+func validateWindowLimitForMutation(selector windowSelector) error {
+	if selector.Limit > 0 && !windowAllFlag {
+		return &ValidationError{
+			Field:   "limit",
+			Value:   strconv.Itoa(selector.Limit),
+			Message: "requires --all",
+		}
+	}
+
+	return nil
+}
+
+func parseWindowGeometryConfig(mode windowGeometryMode) (windowGeometryConfig, error) {
+	selector, err := parseWindowSelector(false)
+	if err != nil {
+		return windowGeometryConfig{}, err
+	}
+
+	if err := validateWindowLimitForMutation(selector); err != nil {
+		return windowGeometryConfig{}, err
+	}
+
+	timeout, err := parseTimeout(windowTimeoutFlag)
+	if err != nil {
+		return windowGeometryConfig{}, err
+	}
+
+	cfg := windowGeometryConfig{
+		Selector: selector,
+		Mode:     mode,
+		All:      windowAllFlag,
+		Timeout:  timeout,
+		Point: pointGeometry{
+			X: GeomValue{Value: 0, Percent: false},
+			Y: GeomValue{Value: 0, Percent: false},
+		},
+		Size: sizeGeometry{
+			W: GeomValue{Value: 0, Percent: false},
+			H: GeomValue{Value: 0, Percent: false},
+		},
+		Geom: ParsedGeometry{
+			X: GeomValue{Value: 0, Percent: false},
+			Y: GeomValue{Value: 0, Percent: false},
+			W: GeomValue{Value: 0, Percent: false},
+			H: GeomValue{Value: 0, Percent: false},
+		},
+		ScriptName: "",
+		TempDir:    "",
+		JSFile:     "",
+	}
+
+	switch mode {
+	case windowGeometryModeMove:
+		cfg.Point, err = parsePointGeometry(windowPosFlag, "pos")
+	case windowGeometryModeResize:
+		cfg.Size, err = parseSizeGeometry(windowSizeFlag, "size")
+	case windowGeometryModeSet:
+		cfg.Geom, err = parseGeom(windowGeomFlag)
+	default:
+		err = &ValidationError{Field: "geometry", Value: string(mode), Message: "unknown geometry mode"}
+	}
+
+	if err != nil {
+		return windowGeometryConfig{}, err
+	}
+
+	scriptName := fmt.Sprintf("kwinl-windows-%s-%d-%s", mode, os.Getpid(), generateRandomSuffix())
+
+	tempDir, err := os.MkdirTemp("", "kwinl-windows-geometry-*")
+	if err != nil {
+		return windowGeometryConfig{}, fmt.Errorf("failed to create temp dir: %w", err)
+	}
+
+	cfg.ScriptName = scriptName
+	cfg.TempDir = tempDir
+	cfg.JSFile = filepath.Join(tempDir, scriptName+".js")
+
+	return cfg, nil
+}
+
+func runDesktopsList(cmd *cobra.Command, args []string) error {
+	payload, err := runDesktopQuery("list")
+	if err != nil {
+		return err
+	}
+
+	return printDesktopListPayload(payload, desktopJSONFlag)
+}
+
+func runDesktopsCurrent(cmd *cobra.Command, args []string) error {
+	payload, err := runDesktopQuery("current")
+	if err != nil {
+		return err
+	}
+
+	return printDesktopCurrentPayload(payload, desktopJSONFlag)
+}
+
+func runDesktopsCount(cmd *cobra.Command, args []string) error {
+	payload, err := runDesktopQuery("count")
+	if err != nil {
+		return err
+	}
+
+	var parsed desktopPayload
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		return fmt.Errorf("parse desktop count payload JSON: %w", err)
+	}
+
+	fmt.Println(parsed.Count)
+
+	return nil
+}
+
+func runDesktopQuery(mode string) (string, error) {
+	timeout, err := parseTimeout(desktopTimeoutFlag)
+	if err != nil {
+		return "", err
+	}
+
+	return runGeneratedCaptureScript("desktops-"+mode, timeout, func(scriptName, serviceName string) string {
+		return generateDesktopQueryJS(scriptName, serviceName, mode, verboseFlag)
+	})
+}
+
+func runDesktopsSet(cmd *cobra.Command, args []string) error {
+	timeout, err := parseTimeout(desktopTimeoutFlag)
+	if err != nil {
+		return err
+	}
+
+	target := strings.TrimSpace(args[0])
+	if target == "" {
+		return &ValidationError{Field: "desktop", Value: "", Message: "target is required"}
+	}
+
+	scriptName := fmt.Sprintf("kwinl-desktops-set-%d-%s", os.Getpid(), generateRandomSuffix())
+
+	tempDir, err := os.MkdirTemp("", "kwinl-desktops-set-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir: %w", err)
+	}
+
+	defer removeTempDirWarn(tempDir)
+
+	jsFile := filepath.Join(tempDir, scriptName+".js")
+
+	return runGeneratedActionScript(scriptName, jsFile, timeout, func(callbackService string) string {
+		return generateDesktopSetJS(scriptName, callbackService, target, verboseFlag)
+	})
+}
+
+func printDesktopListPayload(payload string, jsonOutput bool) error {
+	var parsed desktopPayload
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		return fmt.Errorf("parse desktop list payload JSON: %w", err)
+	}
+
+	if jsonOutput {
+		data, err := json.MarshalIndent(parsed, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal desktop list payload JSON: %w", err)
+		}
+
+		fmt.Println(string(data))
+
+		return nil
+	}
+
+	for _, desktop := range parsed.Desktops {
+		state := "-"
+		if desktop.Current {
+			state = "current"
+		}
+
+		fmt.Printf("%d\t%s\t%s\t%s\n", desktop.Index, desktop.ID, desktop.Name, state)
+	}
+
+	return nil
+}
+
+func printDesktopCurrentPayload(payload string, jsonOutput bool) error {
+	var parsed desktopPayload
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		return fmt.Errorf("parse current desktop payload JSON: %w", err)
+	}
+
+	if jsonOutput {
+		data, err := json.MarshalIndent(parsed, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal current desktop payload JSON: %w", err)
+		}
+
+		fmt.Println(string(data))
+
+		return nil
+	}
+
+	if parsed.Current == nil {
+		return newExitError(exitCodeLoadFailed, errNoCurrentDesktop)
+	}
+
+	fmt.Printf("%d\t%s\t%s\n", parsed.Current.Index, parsed.Current.ID, parsed.Current.Name)
+
+	return nil
+}
+
+func runMouseLocation(cmd *cobra.Command, args []string) error {
+	timeout, err := parseTimeout(mouseTimeoutFlag)
+	if err != nil {
+		return err
+	}
+
+	payload, err := runGeneratedCaptureScript("mouse-location", timeout, func(scriptName, serviceName string) string {
+		return generateMouseLocationJS(scriptName, serviceName, verboseFlag)
+	})
+	if err != nil {
+		return err
+	}
+
+	return printMouseLocationPayload(payload, mouseJSONFlag)
+}
+
+func runMouseHoveredWindow(cmd *cobra.Command, args []string) error {
+	timeout, err := parseTimeout(mouseTimeoutFlag)
+	if err != nil {
+		return err
+	}
+
+	payload, err := runGeneratedCaptureScript("mouse-hovered-window", timeout, func(scriptName, serviceName string) string {
+		return generateMouseHoveredWindowJS(scriptName, serviceName, mouseAllFlag, verboseFlag)
+	})
+	if err != nil {
+		return err
+	}
+
+	return printHoveredWindowPayload(payload, mouseJSONFlag)
+}
+
+func printMouseLocationPayload(payload string, jsonOutput bool) error {
+	var parsed mouseLocationPayload
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		return fmt.Errorf("parse mouse location payload JSON: %w", err)
+	}
+
+	if jsonOutput {
+		data, err := json.MarshalIndent(parsed, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal mouse location payload JSON: %w", err)
+		}
+
+		fmt.Println(string(data))
+
+		return nil
+	}
+
+	fmt.Printf("%d\t%d\t%s\n", parsed.X, parsed.Y, parsed.Monitor)
+
+	return nil
+}
+
+func printHoveredWindowPayload(payload string, jsonOutput bool) error {
+	var parsed windowSearchPayload
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		return fmt.Errorf("parse hovered window payload JSON: %w", err)
+	}
+
+	if len(parsed.Windows) == 0 {
+		return reportedExitError(exitCodeNoMatch, errNoMatchingWindow)
+	}
+
+	return printWindowSearchPayload(payload, jsonOutput)
+}
+
+type externalCommand struct {
+	Name string
+	Args []string
+}
+
+func runMouseClick(buttonOverride string) error {
+	button := strings.TrimSpace(buttonOverride)
+	if button == "" {
+		button = strings.TrimSpace(mouseButtonFlag)
+	}
+
+	if err := validateMouseButton(button); err != nil {
+		return err
+	}
+
+	repeat, err := parseMouseRepeat(mouseRepeatFlag)
+	if err != nil {
+		return err
+	}
+
+	point, hasPoint, err := parseOptionalMousePoint(mouseAtFlag)
+	if err != nil {
+		return err
+	}
+
+	backend, err := resolveMouseClickBackend(mouseBackendFlag, exec.LookPath)
+	if err != nil {
+		return err
+	}
+
+	commands := buildMouseClickCommands(backend, button, repeat, optionalMousePoint(point, hasPoint))
+
+	return runExternalCommands(commands)
+}
+
+func runMouseScroll(cmd *cobra.Command, args []string) error {
+	amount := mouseScrollAmountFlag
+	if amount == 0 {
+		return &ValidationError{Field: "amount", Value: "0", Message: "must not be 0"}
+	}
+
+	point, hasPoint, err := parseOptionalMousePoint(mouseAtFlag)
+	if err != nil {
+		return err
+	}
+
+	backend, err := resolveMouseScrollBackend(mouseBackendFlag, exec.LookPath)
+	if err != nil {
+		return err
+	}
+
+	commands := buildMouseScrollCommands(backend, amount, optionalMousePoint(point, hasPoint))
+
+	return runExternalCommands(commands)
+}
+
+func validateMouseButton(button string) error {
+	switch button {
+	case "left", "right", "middle":
+		return nil
+	default:
+		return &ValidationError{
+			Field:   "button",
+			Value:   button,
+			Message: "valid buttons: left, right, middle",
+		}
+	}
+}
+
+func parseMouseRepeat(repeat int) (int, error) {
+	if repeat <= 0 {
+		return 0, &ValidationError{
+			Field:   "repeat",
+			Value:   strconv.Itoa(repeat),
+			Message: "must be greater than 0",
+		}
+	}
+
+	return repeat, nil
+}
+
+func parseOptionalMousePoint(value string) (mousePoint, bool, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return mousePoint{X: 0, Y: 0}, false, nil
+	}
+
+	parts := strings.Split(value, ",")
+	if len(parts) != 2 {
+		return mousePoint{X: 0, Y: 0}, false, &ValidationError{
+			Field:   "at",
+			Value:   value,
+			Message: "expected x,y (2 comma-separated integer values)",
+		}
+	}
+
+	x, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return mousePoint{X: 0, Y: 0}, false, &ValidationError{Field: "at", Value: value, Message: "x must be an integer"}
+	}
+
+	y, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return mousePoint{X: 0, Y: 0}, false, &ValidationError{Field: "at", Value: value, Message: "y must be an integer"}
+	}
+
+	return mousePoint{X: x, Y: y}, true, nil
+}
+
+func optionalMousePoint(point mousePoint, ok bool) *mousePoint {
+	if !ok {
+		return nil
+	}
+
+	return &point
+}
+
+func resolveMouseClickBackend(requested string, lookPath func(string) (string, error)) (string, error) {
+	switch strings.TrimSpace(requested) {
+	case "", mouseBackendAuto:
+		if _, err := lookPath(mouseBackendYdotool); err == nil {
+			return mouseBackendYdotool, nil
+		}
+
+		if _, err := lookPath(mouseBackendXdotool); err == nil {
+			return mouseBackendXdotool, nil
+		}
+
+		return "", newExitError(exitCodeLaunchFailed, errNoMouseInputBackend)
+	case mouseBackendYdotool:
+		if _, err := lookPath(mouseBackendYdotool); err != nil {
+			return "", newExitError(exitCodeLaunchFailed, fmt.Errorf("ydotool not found: %w", err))
+		}
+
+		return mouseBackendYdotool, nil
+	case mouseBackendXdotool:
+		if _, err := lookPath(mouseBackendXdotool); err != nil {
+			return "", newExitError(exitCodeLaunchFailed, fmt.Errorf("xdotool not found: %w", err))
+		}
+
+		return mouseBackendXdotool, nil
+	default:
+		return "", &ValidationError{
+			Field:   "backend",
+			Value:   requested,
+			Message: "valid backends: auto, ydotool, xdotool",
+		}
+	}
+}
+
+func resolveMouseScrollBackend(requested string, lookPath func(string) (string, error)) (string, error) {
+	switch strings.TrimSpace(requested) {
+	case "", mouseBackendAuto, mouseBackendXdotool:
+		if _, err := lookPath(mouseBackendXdotool); err != nil {
+			return "", newExitError(exitCodeLaunchFailed, fmt.Errorf("xdotool not found: %w", err))
+		}
+
+		return mouseBackendXdotool, nil
+	case mouseBackendYdotool:
+		return "", &ValidationError{
+			Field:   "backend",
+			Value:   requested,
+			Message: "scroll supports xdotool only",
+		}
+	default:
+		return "", &ValidationError{
+			Field:   "backend",
+			Value:   requested,
+			Message: "valid backends: auto, xdotool",
+		}
+	}
+}
+
+func buildMouseClickCommands(backend, button string, repeat int, point *mousePoint) []externalCommand {
+	commands := mouseMoveCommands(backend, point)
+	switch backend {
+	case mouseBackendYdotool:
+		commands = append(commands, externalCommand{
+			Name: mouseBackendYdotool,
+			Args: []string{"click", "--repeat", strconv.Itoa(repeat), ydotoolButtonCode(button)},
+		})
+	case mouseBackendXdotool:
+		commands = append(commands, externalCommand{
+			Name: mouseBackendXdotool,
+			Args: []string{"click", "--repeat", strconv.Itoa(repeat), xdotoolButtonCode(button)},
+		})
+	}
+
+	return commands
+}
+
+func buildMouseScrollCommands(backend string, amount int, point *mousePoint) []externalCommand {
+	commands := mouseMoveCommands(backend, point)
+
+	button := "5"
+	if amount < 0 {
+		button = "4"
+		amount = -amount
+	}
+
+	commands = append(commands, externalCommand{
+		Name: mouseBackendXdotool,
+		Args: []string{"click", "--repeat", strconv.Itoa(amount), button},
+	})
+
+	return commands
+}
+
+func mouseMoveCommands(backend string, point *mousePoint) []externalCommand {
+	if point == nil {
+		return nil
+	}
+
+	x := strconv.Itoa(point.X)
+	y := strconv.Itoa(point.Y)
+
+	switch backend {
+	case mouseBackendYdotool:
+		return []externalCommand{{Name: mouseBackendYdotool, Args: []string{"mousemove", "--absolute", x, y}}}
+	case mouseBackendXdotool:
+		return []externalCommand{{Name: mouseBackendXdotool, Args: []string{"mousemove", x, y}}}
+	default:
+		return nil
+	}
+}
+
+func ydotoolButtonCode(button string) string {
+	switch button {
+	case "left":
+		return "0xC0"
+	case "right":
+		return "0xC1"
+	case "middle":
+		return "0xC2"
+	default:
+		return ""
+	}
+}
+
+func xdotoolButtonCode(button string) string {
+	switch button {
+	case "left":
+		return "1"
+	case "middle":
+		return "2"
+	case "right":
+		return "3"
+	default:
+		return ""
+	}
+}
+
+func runExternalCommands(commands []externalCommand) error {
+	for _, command := range commands {
+		cmd := exec.Command(command.Name, command.Args...) //nolint:noctx // Short-lived local input tools do not need request-scoped cancellation.
+		cmd.Stdout = os.Stdout
+
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return newExitError(exitCodeLaunchFailed, fmt.Errorf("run %s: %w", command.Name, err))
+		}
+	}
+
+	return nil
 }
 
 func loadWindowScriptPath(conn *dbus.Conn, jsFile, scriptName string) (string, error) {
@@ -2856,11 +3902,11 @@ func validatePresetGeometryValues(label string, p Preset, geomComplete bool) err
 	}
 
 	if geom.W.Value <= 0 {
-		return presetErr(label, &GeometryError{Component: "width", Value: "", Reason: "must be > 0"})
+		return presetErr(label, &GeometryError{Component: "width", Value: "", Reason: geometryReasonMustBePositive})
 	}
 
 	if geom.H.Value <= 0 {
-		return presetErr(label, &GeometryError{Component: "height", Value: "", Reason: "must be > 0"})
+		return presetErr(label, &GeometryError{Component: "height", Value: "", Reason: geometryReasonMustBePositive})
 	}
 
 	return nil
@@ -3077,6 +4123,60 @@ func parseGeom(s string) (ParsedGeometry, error) {
 	return parseGeomParts(parts, false)
 }
 
+func parsePointGeometry(s, field string) (pointGeometry, error) {
+	parts := strings.Split(s, ",")
+	if len(parts) != 2 {
+		return pointGeometry{}, &ValidationError{
+			Field:   field,
+			Value:   s,
+			Message: "expected x,y (2 comma-separated values)",
+		}
+	}
+
+	x, err := parseGeomValue(parts[0], "x", false)
+	if err != nil {
+		return pointGeometry{}, err
+	}
+
+	y, err := parseGeomValue(parts[1], "y", false)
+	if err != nil {
+		return pointGeometry{}, err
+	}
+
+	return pointGeometry{X: x, Y: y}, nil
+}
+
+func parseSizeGeometry(s, field string) (sizeGeometry, error) {
+	parts := strings.Split(s, ",")
+	if len(parts) != 2 {
+		return sizeGeometry{}, &ValidationError{
+			Field:   field,
+			Value:   s,
+			Message: "expected width,height (2 comma-separated values)",
+		}
+	}
+
+	w, err := parseGeomValue(parts[0], "width", false)
+	if err != nil {
+		return sizeGeometry{}, err
+	}
+
+	h, err := parseGeomValue(parts[1], "height", false)
+	if err != nil {
+		return sizeGeometry{}, err
+	}
+
+	if w.Value <= 0 {
+		return sizeGeometry{}, &GeometryError{Component: "width", Value: "", Reason: geometryReasonMustBePositive}
+	}
+
+	if h.Value <= 0 {
+		return sizeGeometry{}, &GeometryError{Component: "height", Value: "", Reason: geometryReasonMustBePositive}
+	}
+
+	return sizeGeometry{W: w, H: h}, nil
+}
+
 func parsePlaceGeom(s string, centered bool) (ParsedGeometry, error) {
 	if !centered {
 		return parseGeom(s)
@@ -3125,11 +4225,11 @@ func parseGeomParts(parts []string, allowEmptyXY bool) (ParsedGeometry, error) {
 	}
 
 	if w.Value <= 0 {
-		return ParsedGeometry{}, &GeometryError{Component: "width", Value: "", Reason: "must be > 0"}
+		return ParsedGeometry{}, &GeometryError{Component: "width", Value: "", Reason: geometryReasonMustBePositive}
 	}
 
 	if h.Value <= 0 {
-		return ParsedGeometry{}, &GeometryError{Component: "height", Value: "", Reason: "must be > 0"}
+		return ParsedGeometry{}, &GeometryError{Component: "height", Value: "", Reason: geometryReasonMustBePositive}
 	}
 
 	return ParsedGeometry{X: x, Y: y, W: w, H: h}, nil
@@ -3157,11 +4257,11 @@ func parsePresetGeometry(pg PresetGeometry, centered bool) (ParsedGeometry, erro
 	}
 
 	if w.Value <= 0 {
-		return ParsedGeometry{}, &GeometryError{Component: "width", Value: "", Reason: "must be > 0"}
+		return ParsedGeometry{}, &GeometryError{Component: "width", Value: "", Reason: geometryReasonMustBePositive}
 	}
 
 	if h.Value <= 0 {
-		return ParsedGeometry{}, &GeometryError{Component: "height", Value: "", Reason: "must be > 0"}
+		return ParsedGeometry{}, &GeometryError{Component: "height", Value: "", Reason: geometryReasonMustBePositive}
 	}
 
 	return ParsedGeometry{X: x, Y: y, W: w, H: h}, nil
@@ -3338,42 +4438,71 @@ type jsWindowActionConfig struct {
 	CallbackToken   string
 }
 
+type jsWindowGeometryConfig struct {
+	ScriptName      string
+	Selector        windowSelector
+	Mode            windowGeometryMode
+	All             bool
+	Verbose         bool
+	CallbackService string
+	CallbackToken   string
+	Point           pointGeometry
+	Size            sizeGeometry
+	Geom            ParsedGeometry
+}
+
 func mustJSONString(v string) string {
+	return mustJSON(v)
+}
+
+func mustJSON(v any) string {
 	data, err := json.Marshal(v)
 	if err != nil {
-		panic(fmt.Sprintf("marshal JSON string: %v", err))
+		panic(fmt.Sprintf("marshal JSON: %v", err))
 	}
 
 	return string(data)
 }
 
-func generateWindowSearchJS(cfg jsWindowSearchConfig) string {
-	scriptNameJSON := mustJSONString(cfg.ScriptName)
-	targetIDJSON := mustJSONString(cfg.Selector.ID)
-	targetAppJSON := mustJSONString(cfg.Selector.App)
-	targetMatchJSON := mustJSONString(cfg.Selector.Match)
-	serviceJSON := mustJSONString(cfg.Service)
-	pathJSON := mustJSONString(captureObjectPath)
-	ifaceJSON := mustJSONString(captureIface)
-
-	return fmt.Sprintf(`// Auto-generated window search script: %s
-var SCRIPT_NAME = %s;
-var TARGET_ID = %s;
-var TARGET_APP = %s;
-var TARGET_MATCH = %s;
-var VERBOSE = %v;
-var CAP_SERVICE = %s;
-var CAP_PATH = %s;
-var CAP_IFACE = %s;
-
-function vlog() {
-  if (!VERBOSE) return;
-  var msg = "[kwinl] ";
-  for (var i = 0; i < arguments.length; i++) msg += arguments[i] + " ";
-  print(msg);
+func geomValueJS(v GeomValue) string {
+	return fmt.Sprintf("{ value: %d, percent: %v }", v.Value, v.Percent)
 }
 
+func windowSelectorVarsJS(selector windowSelector) string {
+	return fmt.Sprintf(`var TARGET_ID = %s;
+var TARGET_APP = %s;
+var TARGET_MATCH = %s;
+var TARGET_CLASS = %s;
+var TARGET_DESKTOP = %s;
+var TARGET_MONITOR = %s;
+var TARGET_STATES = %s;
+var TARGET_ANY = %v;
+var TARGET_LIMIT = %d;`,
+		mustJSONString(selector.ID),
+		mustJSONString(selector.App),
+		mustJSONString(selector.Match),
+		mustJSONString(selector.Class),
+		mustJSONString(selector.Desktop),
+		mustJSONString(selector.Monitor),
+		mustJSON(selector.States),
+		selector.Any,
+		selector.Limit,
+	)
+}
+
+func windowMatchingJS() string {
+	return `
 function idOf(w) { return "" + w.internalId; }
+
+function windowStringProp(w, name) {
+  try {
+    var v = w[name];
+    if (v === undefined || v === null) return "";
+    return "" + v;
+  } catch (e) {
+    return "";
+  }
+}
 
 function windowIds(w) {
   var ids = [];
@@ -3387,10 +4516,10 @@ function windowIds(w) {
     ids.push(s);
   }
 
-  try { add(w.desktopFileName); } catch (e) {}
-  try { add(w.resourceClass); } catch (e) {}
-  try { add(w.resourceName); } catch (e) {}
-  try { add(w.appId); } catch (e) {}
+  add(windowStringProp(w, "desktopFileName"));
+  add(windowStringProp(w, "resourceClass"));
+  add(windowStringProp(w, "resourceName"));
+  add(windowStringProp(w, "appId"));
   return ids;
 }
 
@@ -3449,41 +4578,29 @@ function isManageable(w) {
   return true;
 }
 
-function windowMatches(w) {
-  if (!isManageable(w)) return false;
-
-  var idOK = TARGET_ID === "";
-  if (TARGET_ID !== "") idOK = idOf(w) === TARGET_ID;
-
-  var appOK = TARGET_APP === "";
-  var ids = windowIds(w);
-  if (TARGET_APP !== "") {
-    for (var i = 0; i < ids.length; i++) {
-      if (appTargetMatches(ids[i], TARGET_APP)) {
-        appOK = true;
-        break;
-      }
-    }
+function regexMatches(value, pattern) {
+  if (pattern === "") return true;
+  try {
+    return new RegExp(pattern).test(value || "");
+  } catch (e) {
+    vlog("regexMatches: regex error", e);
+    return false;
   }
-
-  var matchOK = TARGET_MATCH === "";
-  if (TARGET_MATCH !== "") {
-    try {
-      var re = new RegExp(TARGET_MATCH);
-      matchOK = re.test(w.caption || "");
-    } catch (e) { vlog("windowMatches: regex error", e); }
-  }
-
-  return idOK && appOK && matchOK;
 }
 
-function geometryString(w) {
-  try {
-    var g = w.frameGeometry;
-    return g.x + "," + g.y + "," + g.width + "," + g.height;
-  } catch (e) {
-    return "";
+function appMatchesTarget(w) {
+  if (TARGET_APP === "") return true;
+  var ids = windowIds(w);
+  for (var i = 0; i < ids.length; i++) {
+    if (appTargetMatches(ids[i], TARGET_APP)) return true;
   }
+  return false;
+}
+
+function classMatchesTarget(w) {
+  if (TARGET_CLASS === "") return true;
+  return regexMatches(windowStringProp(w, "resourceClass"), TARGET_CLASS) ||
+    regexMatches(windowStringProp(w, "resourceName"), TARGET_CLASS);
 }
 
 function outputName(out) {
@@ -3492,6 +4609,18 @@ function outputName(out) {
   try { if (out.connector) return "" + out.connector; } catch (e) {}
   try { if (out.connectorName) return "" + out.connectorName; } catch (e) {}
   return "";
+}
+
+function normalizedName(s) {
+  return ("" + s).toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function outputIndex(out) {
+  var screens = workspace.screens || [];
+  for (var i = 0; i < screens.length; i++) {
+    if (screens[i] === out) return i;
+  }
+  return -1;
 }
 
 function findOutputForWindow(w) {
@@ -3508,6 +4637,38 @@ function findOutputForWindow(w) {
   return null;
 }
 
+function monitorMatchesTarget(w) {
+  if (TARGET_MONITOR === "") return true;
+  var out = findOutputForWindow(w);
+  if (!out) return false;
+  var target = ("" + TARGET_MONITOR).trim();
+  if (/^\d+$/.test(target)) {
+    return outputIndex(out) === parseInt(target, 10);
+  }
+  var name = outputName(out);
+  if (name === target || name.toLowerCase() === target.toLowerCase()) return true;
+  var have = normalizedName(name);
+  var want = normalizedName(target);
+  return want !== "" && have !== "" && (have === want || have.endsWith(want) || want.endsWith(have));
+}
+
+function findDesktopTarget(target) {
+  if (target === "") return null;
+  if (target === "current") return workspace.currentDesktop;
+  var desktops = workspace.desktops || [];
+  if (/^\d+$/.test(target)) {
+    var idx = parseInt(target, 10);
+    if (!isNaN(idx) && idx >= 1 && idx <= desktops.length) return desktops[idx - 1];
+  }
+  for (var i = 0; i < desktops.length; i++) {
+    var d = desktops[i];
+    if (!d) continue;
+    try { if (d.name === target) return d; } catch (e) {}
+    try { if (d.id === target) return d; } catch (e) {}
+  }
+  return null;
+}
+
 function desktopNameForWindow(w) {
   try {
     if (w.desktops && w.desktops.length > 0) {
@@ -3518,6 +4679,105 @@ function desktopNameForWindow(w) {
   return "";
 }
 
+function desktopIndexForDesktop(desk) {
+  var desktops = workspace.desktops || [];
+  for (var i = 0; i < desktops.length; i++) {
+    if (desktops[i] === desk) return i + 1;
+  }
+  return 0;
+}
+
+function desktopIndexForWindow(w) {
+  try {
+    if (w.desktops && w.desktops.length > 0) {
+      return desktopIndexForDesktop(w.desktops[0]);
+    }
+  } catch (e) {}
+  return 0;
+}
+
+function desktopMatchesTarget(w) {
+  if (TARGET_DESKTOP === "") return true;
+  var target = findDesktopTarget(TARGET_DESKTOP);
+  if (!target) return false;
+  if (w.onAllDesktops) return true;
+  var desks = [];
+  try { desks = w.desktops || []; } catch (e) {}
+  if (desks.length === 0) return true;
+  for (var i = 0; i < desks.length; i++) {
+    if (desks[i] === target) return true;
+  }
+  return false;
+}
+
+function windowHasState(w, state) {
+  switch (state) {
+    case "minimized":
+      return !!w.minimized;
+    case "fullscreen":
+      return !!w.fullScreen;
+    case "keep-above":
+      return !!w.keepAbove;
+    case "keep-below":
+      return !!w.keepBelow;
+    case "all-desktops":
+      return !!w.onAllDesktops || !w.desktops || w.desktops.length === 0;
+    default:
+      return false;
+  }
+}
+
+function statesMatchTarget(w) {
+  if (TARGET_STATES.length === 0) return true;
+  var matched = 0;
+  for (var i = 0; i < TARGET_STATES.length; i++) {
+    if (windowHasState(w, TARGET_STATES[i])) matched++;
+  }
+  if (TARGET_ANY) return matched > 0;
+  return matched === TARGET_STATES.length;
+}
+
+function addSelectorCheck(checks, active, value) {
+  if (active) checks.push(!!value);
+}
+
+function selectorChecksMatch(checks) {
+  if (checks.length === 0) return true;
+  if (TARGET_ANY) {
+    for (var i = 0; i < checks.length; i++) {
+      if (checks[i]) return true;
+    }
+    return false;
+  }
+  for (var j = 0; j < checks.length; j++) {
+    if (!checks[j]) return false;
+  }
+  return true;
+}
+
+function windowMatches(w) {
+  if (!isManageable(w)) return false;
+
+  var checks = [];
+  addSelectorCheck(checks, TARGET_ID !== "", idOf(w) === TARGET_ID);
+  addSelectorCheck(checks, TARGET_APP !== "", appMatchesTarget(w));
+  addSelectorCheck(checks, TARGET_MATCH !== "", regexMatches(w.caption || "", TARGET_MATCH));
+  addSelectorCheck(checks, TARGET_CLASS !== "", classMatchesTarget(w));
+  addSelectorCheck(checks, TARGET_DESKTOP !== "", desktopMatchesTarget(w));
+  addSelectorCheck(checks, TARGET_MONITOR !== "", monitorMatchesTarget(w));
+  addSelectorCheck(checks, TARGET_STATES.length > 0, statesMatchTarget(w));
+  return selectorChecksMatch(checks);
+}
+
+function geometryString(w) {
+  try {
+    var g = w.frameGeometry;
+    return g.x + "," + g.y + "," + g.width + "," + g.height;
+  } catch (e) {
+    return "";
+  }
+}
+
 function windowInfo(w) {
   var ids = windowIds(w);
   return {
@@ -3525,9 +4785,12 @@ function windowInfo(w) {
     app: ids.length > 0 ? ids[0] : "",
     appIds: ids,
     caption: "" + (w.caption || ""),
+    resourceClass: windowStringProp(w, "resourceClass"),
+    resourceName: windowStringProp(w, "resourceName"),
     geometry: geometryString(w),
     monitor: outputName(findOutputForWindow(w)),
     desktop: desktopNameForWindow(w),
+    desktopIndex: desktopIndexForWindow(w),
     minimized: !!w.minimized,
     keepAbove: !!w.keepAbove,
     keepBelow: !!w.keepBelow,
@@ -3535,13 +4798,40 @@ function windowInfo(w) {
     onAllDesktops: !!w.onAllDesktops
   };
 }
+`
+}
+
+func generateWindowSearchJS(cfg jsWindowSearchConfig) string {
+	scriptNameJSON := mustJSONString(cfg.ScriptName)
+	serviceJSON := mustJSONString(cfg.Service)
+	pathJSON := mustJSONString(captureObjectPath)
+	ifaceJSON := mustJSONString(captureIface)
+
+	return fmt.Sprintf(`// Auto-generated window search script: %s
+var SCRIPT_NAME = %s;
+%s
+var VERBOSE = %v;
+var CAP_SERVICE = %s;
+var CAP_PATH = %s;
+var CAP_IFACE = %s;
+
+function vlog() {
+  if (!VERBOSE) return;
+  var msg = "[kwinl] ";
+  for (var i = 0; i < arguments.length; i++) msg += arguments[i] + " ";
+  print(msg);
+}
+
+%s
 
 function search() {
   var wins = workspace.stackingOrder || [];
   var found = [];
   for (var i = wins.length - 1; i >= 0; i--) {
     var w = wins[i];
-    if (windowMatches(w)) found.push(windowInfo(w));
+    if (!windowMatches(w)) continue;
+    found.push(windowInfo(w));
+    if (TARGET_LIMIT > 0 && found.length >= TARGET_LIMIT) break;
   }
 
   var payload = JSON.stringify({ windows: found });
@@ -3554,24 +4844,19 @@ function search() {
 }
 
 search();
-`, cfg.ScriptName, scriptNameJSON, targetIDJSON, targetAppJSON, targetMatchJSON,
-		cfg.Verbose, serviceJSON, pathJSON, ifaceJSON)
+`, cfg.ScriptName, scriptNameJSON, windowSelectorVarsJS(cfg.Selector),
+		cfg.Verbose, serviceJSON, pathJSON, ifaceJSON, windowMatchingJS())
 }
 
 func generateWindowActionJS(cfg jsWindowActionConfig) string {
 	scriptNameJSON := mustJSONString(cfg.ScriptName)
-	targetIDJSON := mustJSONString(cfg.Selector.ID)
-	targetAppJSON := mustJSONString(cfg.Selector.App)
-	targetMatchJSON := mustJSONString(cfg.Selector.Match)
 	actionJSON := mustJSONString(cfg.Action)
 	callbackServiceJSON := mustJSONString(cfg.CallbackService)
 	callbackTokenJSON := mustJSONString(cfg.CallbackToken)
 
 	return fmt.Sprintf(`// Auto-generated window action script: %s
 var SCRIPT_NAME = %s;
-var TARGET_ID = %s;
-var TARGET_APP = %s;
-var TARGET_MATCH = %s;
+%s
 var ACTION = %s;
 var APPLY_ALL = %v;
 var VERBOSE = %v;
@@ -3587,118 +4872,7 @@ function vlog() {
   print(msg);
 }
 
-function idOf(w) { return "" + w.internalId; }
-
-function windowIds(w) {
-  var ids = [];
-  function add(v) {
-    if (v === undefined || v === null) return;
-    var s = ("" + v).trim();
-    if (s === "") return;
-    for (var i = 0; i < ids.length; i++) {
-      if (ids[i] === s) return;
-    }
-    ids.push(s);
-  }
-
-  try { add(w.desktopFileName); } catch (e) {}
-  try { add(w.resourceClass); } catch (e) {}
-  try { add(w.resourceName); } catch (e) {}
-  try { add(w.appId); } catch (e) {}
-  return ids;
-}
-
-function appTargetMatches(id, target) {
-  if (!id || !target) return false;
-  if (id === target) return true;
-  if (id === (target + ".desktop")) return true;
-  if (id.endsWith("/" + target + ".desktop")) return true;
-  if (id.endsWith("/" + target)) return true;
-
-  var idLower = id.toLowerCase();
-  var targetLower = target.toLowerCase();
-  if (idLower === targetLower) return true;
-  if (idLower === (targetLower + ".desktop")) return true;
-  if (idLower.endsWith("/" + targetLower + ".desktop")) return true;
-  if (idLower.endsWith("/" + targetLower)) return true;
-
-  function stripPathAndDesktop(s) {
-    var out = s;
-    var slash = out.lastIndexOf("/");
-    if (slash >= 0) out = out.slice(slash + 1);
-    if (out.endsWith(".desktop")) out = out.slice(0, -8);
-    return out;
-  }
-
-  function lastSegment(s) {
-    var dot = s.lastIndexOf(".");
-    if (dot >= 0 && dot + 1 < s.length) return s.slice(dot + 1);
-    return s;
-  }
-
-  function stripInstanceSuffix(s) {
-    return s.replace(/-[0-9]+$/, "");
-  }
-
-  var idNorm = stripPathAndDesktop(idLower);
-  var targetNorm = stripPathAndDesktop(targetLower);
-  if (idNorm === targetNorm) return true;
-
-  var idTail = stripInstanceSuffix(lastSegment(idNorm));
-  var targetTail = stripInstanceSuffix(lastSegment(targetNorm));
-  if (idTail !== "" && idTail === targetTail) return true;
-
-  if (idNorm.startsWith(targetNorm + "-")) return true;
-  if (targetNorm.startsWith(idNorm + "-")) return true;
-  return false;
-}
-
-function isManageable(w) {
-  if (!w) return false;
-  if (w.deleted) return false;
-  if (w.specialWindow) return false;
-  if (w.popupWindow) return false;
-  if (w.dock) return false;
-  if (w.desktopWindow) return false;
-  return true;
-}
-
-function windowMatches(w) {
-  if (!isManageable(w)) return false;
-
-  var idOK = TARGET_ID === "";
-  if (TARGET_ID !== "") idOK = idOf(w) === TARGET_ID;
-
-  var appOK = TARGET_APP === "";
-  var ids = windowIds(w);
-  if (TARGET_APP !== "") {
-    for (var i = 0; i < ids.length; i++) {
-      if (appTargetMatches(ids[i], TARGET_APP)) {
-        appOK = true;
-        break;
-      }
-    }
-  }
-
-  var matchOK = TARGET_MATCH === "";
-  if (TARGET_MATCH !== "") {
-    try {
-      var re = new RegExp(TARGET_MATCH);
-      matchOK = re.test(w.caption || "");
-    } catch (e) { vlog("windowMatches: regex error", e); }
-  }
-
-  return idOK && appOK && matchOK;
-}
-
-function geometryString(w) {
-  try {
-    var g = w.frameGeometry;
-    return g.x + "," + g.y + "," + g.width + "," + g.height;
-  } catch (e) {
-    return "";
-  }
-}
+%s
 
 function notify(success, w, message) {
   if (!CALLBACK_SERVICE) return;
@@ -3833,6 +5007,7 @@ function runAction() {
     }
 
     if (!APPLY_ALL) break;
+    if (TARGET_LIMIT > 0 && applied >= TARGET_LIMIT) break;
   }
 
   if (applied === 0) {
@@ -3846,8 +5021,379 @@ function runAction() {
 }
 
 runAction();
-`, cfg.ScriptName, scriptNameJSON, targetIDJSON, targetAppJSON, targetMatchJSON,
-		actionJSON, cfg.All, cfg.Verbose, callbackServiceJSON, callbackTokenJSON)
+`, cfg.ScriptName, scriptNameJSON, windowSelectorVarsJS(cfg.Selector),
+		actionJSON, cfg.All, cfg.Verbose, callbackServiceJSON, callbackTokenJSON, windowMatchingJS())
+}
+
+func generateWindowGeometryJS(cfg jsWindowGeometryConfig) string {
+	scriptNameJSON := mustJSONString(cfg.ScriptName)
+	modeJSON := mustJSONString(string(cfg.Mode))
+	callbackServiceJSON := mustJSONString(cfg.CallbackService)
+	callbackTokenJSON := mustJSONString(cfg.CallbackToken)
+	x := cfg.Geom.X
+	y := cfg.Geom.Y
+	w := cfg.Geom.W
+
+	h := cfg.Geom.H
+	switch cfg.Mode {
+	case windowGeometryModeMove:
+		x = cfg.Point.X
+		y = cfg.Point.Y
+	case windowGeometryModeResize:
+		w = cfg.Size.W
+		h = cfg.Size.H
+	case windowGeometryModeSet:
+	}
+
+	return fmt.Sprintf(`// Auto-generated window geometry script: %s
+var SCRIPT_NAME = %s;
+%s
+var GEOMETRY_MODE = %s;
+var APPLY_ALL = %v;
+var VERBOSE = %v;
+var CALLBACK_SERVICE = %s;
+var CALLBACK_TOKEN = %s;
+var CALLBACK_PATH = "/io/github/kwinl/Place";
+var CALLBACK_IFACE = "io.github.kwinl.Place";
+var GEOM_X = %s;
+var GEOM_Y = %s;
+var GEOM_W = %s;
+var GEOM_H = %s;
+
+function vlog() {
+  if (!VERBOSE) return;
+  var msg = "[kwinl] ";
+  for (var i = 0; i < arguments.length; i++) msg += arguments[i] + " ";
+  print(msg);
+}
+
+%s
+
+function notify(success, w, message) {
+  if (!CALLBACK_SERVICE) return;
+  var windowID = "";
+  var caption = "";
+  var geom = "";
+  if (w) {
+    try { windowID = "" + w.internalId; } catch (e) {}
+    try { caption = "" + (w.caption || ""); } catch (e) {}
+    geom = geometryString(w);
+  }
+
+  try {
+    callDBus(CALLBACK_SERVICE, CALLBACK_PATH, CALLBACK_IFACE, "Placed",
+             CALLBACK_TOKEN, success, windowID, caption, geom, "" + message);
+  } catch (e) { vlog("notify: error", e); }
+}
+
+function finish() {
+  try {
+    callDBus("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript", SCRIPT_NAME);
+  } catch (e) { vlog("finish: unload error", e); }
+}
+
+function monitorGeometryForWindow(w) {
+  var out = findOutputForWindow(w);
+  if (!out) {
+    try { out = workspace.activeScreen; } catch (e) {}
+  }
+  try {
+    if (out && out.geometry) return out.geometry;
+  } catch (e) {}
+  try {
+    if (workspace.virtualScreenGeometry) return workspace.virtualScreenGeometry;
+  } catch (e) {}
+  return {x: 0, y: 0, width: 1, height: 1};
+}
+
+function resolveValue(v, total) {
+  return v.percent ? Math.round(total * v.value / 100) : v.value;
+}
+
+function applyGeometry(w) {
+  var current = w.frameGeometry;
+  var base = monitorGeometryForWindow(w);
+  var next = {x: current.x, y: current.y, width: current.width, height: current.height};
+
+  switch (GEOMETRY_MODE) {
+    case "move":
+      next.x = base.x + resolveValue(GEOM_X, base.width);
+      next.y = base.y + resolveValue(GEOM_Y, base.height);
+      break;
+    case "resize":
+      next.width = resolveValue(GEOM_W, base.width);
+      next.height = resolveValue(GEOM_H, base.height);
+      break;
+    case "set-geometry":
+      next.x = base.x + resolveValue(GEOM_X, base.width);
+      next.y = base.y + resolveValue(GEOM_Y, base.height);
+      next.width = resolveValue(GEOM_W, base.width);
+      next.height = resolveValue(GEOM_H, base.height);
+      break;
+    default:
+      throw "unknown geometry mode: " + GEOMETRY_MODE;
+  }
+
+  w.frameGeometry = next;
+}
+
+function runGeometry() {
+  var wins = workspace.stackingOrder || [];
+  var first = null;
+  var applied = 0;
+
+  for (var i = wins.length - 1; i >= 0; i--) {
+    var w = wins[i];
+    if (!windowMatches(w)) continue;
+    if (!first) first = w;
+
+    try {
+      applyGeometry(w);
+      applied++;
+    } catch (e) {
+      notify(false, w, "failed to apply " + GEOMETRY_MODE + ": " + e);
+      finish();
+      return;
+    }
+
+    if (!APPLY_ALL) break;
+    if (TARGET_LIMIT > 0 && applied >= TARGET_LIMIT) break;
+  }
+
+  if (applied === 0) {
+    notify(false, null, "no matching window found");
+    finish();
+    return;
+  }
+
+  notify(true, first, "applied " + GEOMETRY_MODE + " to " + applied + " window(s)");
+  finish();
+}
+
+runGeometry();
+`, cfg.ScriptName, scriptNameJSON, windowSelectorVarsJS(cfg.Selector),
+		modeJSON, cfg.All, cfg.Verbose, callbackServiceJSON, callbackTokenJSON,
+		geomValueJS(x), geomValueJS(y),
+		geomValueJS(w), geomValueJS(h),
+		windowMatchingJS())
+}
+
+func generateDesktopQueryJS(scriptName, serviceName, mode string, verbose bool) string {
+	return fmt.Sprintf(`// Auto-generated desktop query script: %s
+var SCRIPT_NAME = %s;
+var MODE = %s;
+var VERBOSE = %v;
+var CAP_SERVICE = %s;
+var CAP_PATH = %s;
+var CAP_IFACE = %s;
+
+function vlog() {
+  if (!VERBOSE) return;
+  var msg = "[kwinl] ";
+  for (var i = 0; i < arguments.length; i++) msg += arguments[i] + " ";
+  print(msg);
+}
+
+function desktopInfo(d, idx, current) {
+  var id = "";
+  var name = "";
+  var x11 = 0;
+  try { if (d && d.id) id = "" + d.id; } catch (e) {}
+  try { if (d && d.name) name = "" + d.name; } catch (e) {}
+  try { if (d && d.x11DesktopNumber) x11 = Number(d.x11DesktopNumber); } catch (e) {}
+  return {id: id, name: name, index: idx + 1, x11DesktopNumber: x11, current: current};
+}
+
+function buildPayload() {
+  var desktops = workspace.desktops || [];
+  var current = workspace.currentDesktop;
+  var infos = [];
+  var currentInfo = null;
+  for (var i = 0; i < desktops.length; i++) {
+    var info = desktopInfo(desktops[i], i, desktops[i] === current);
+    infos.push(info);
+    if (info.current) currentInfo = info;
+  }
+
+  switch (MODE) {
+    case "list":
+      return {desktops: infos};
+    case "current":
+      return {current: currentInfo};
+    case "count":
+      return {count: desktops.length};
+    default:
+      return {count: desktops.length};
+  }
+}
+
+function sendPayload() {
+  try {
+    callDBus(CAP_SERVICE, CAP_PATH, CAP_IFACE, "Send", JSON.stringify(buildPayload()));
+  } catch (e) { vlog("sendPayload: callback error", e); }
+  try {
+    callDBus("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript", SCRIPT_NAME);
+  } catch (e) {}
+}
+
+sendPayload();
+`, scriptName, mustJSONString(scriptName), mustJSONString(mode), verbose,
+		mustJSONString(serviceName), mustJSONString(captureObjectPath), mustJSONString(captureIface))
+}
+
+func generateDesktopSetJS(scriptName, callbackService, target string, verbose bool) string {
+	return fmt.Sprintf(`// Auto-generated desktop set script: %s
+var SCRIPT_NAME = %s;
+var TARGET_DESKTOP = %s;
+var VERBOSE = %v;
+var CALLBACK_SERVICE = %s;
+var CALLBACK_PATH = "/io/github/kwinl/Place";
+var CALLBACK_IFACE = "io.github.kwinl.Place";
+
+function vlog() {
+  if (!VERBOSE) return;
+  var msg = "[kwinl] ";
+  for (var i = 0; i < arguments.length; i++) msg += arguments[i] + " ";
+  print(msg);
+}
+
+function notify(success, message) {
+  try {
+    callDBus(CALLBACK_SERVICE, CALLBACK_PATH, CALLBACK_IFACE, "Placed",
+             SCRIPT_NAME, success, "", "", "", "" + message);
+  } catch (e) { vlog("notify: error", e); }
+}
+
+function finish() {
+  try {
+    callDBus("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript", SCRIPT_NAME);
+  } catch (e) {}
+}
+
+function findDesktop(target) {
+  if (target === "current") return workspace.currentDesktop;
+  var desktops = workspace.desktops || [];
+  if (/^\d+$/.test(target)) {
+    var idx = parseInt(target, 10);
+    if (!isNaN(idx) && idx >= 1 && idx <= desktops.length) return desktops[idx - 1];
+  }
+  for (var i = 0; i < desktops.length; i++) {
+    var d = desktops[i];
+    try { if (d.name === target) return d; } catch (e) {}
+    try { if (d.id === target) return d; } catch (e) {}
+  }
+  return null;
+}
+
+function setDesktop() {
+  var desktop = findDesktop(TARGET_DESKTOP);
+  if (!desktop) {
+    notify(false, "invalid desktop target: " + TARGET_DESKTOP);
+    finish();
+    return;
+  }
+  workspace.currentDesktop = desktop;
+  notify(true, "set current desktop");
+  finish();
+}
+
+setDesktop();
+`, scriptName, mustJSONString(scriptName), mustJSONString(target), verbose, mustJSONString(callbackService))
+}
+
+func generateMouseLocationJS(scriptName, serviceName string, verbose bool) string {
+	return fmt.Sprintf(`// Auto-generated mouse location script: %s
+var SCRIPT_NAME = %s;
+var VERBOSE = %v;
+var CAP_SERVICE = %s;
+var CAP_PATH = %s;
+var CAP_IFACE = %s;
+
+function vlog() {
+  if (!VERBOSE) return;
+  var msg = "[kwinl] ";
+  for (var i = 0; i < arguments.length; i++) msg += arguments[i] + " ";
+  print(msg);
+}
+
+function outputName(out) {
+  if (!out) return "";
+  try { if (out.name) return "" + out.name; } catch (e) {}
+  try { if (out.connector) return "" + out.connector; } catch (e) {}
+  try { if (out.connectorName) return "" + out.connectorName; } catch (e) {}
+  return "";
+}
+
+function sendPayload() {
+  var pos = workspace.cursorPos;
+  var out = null;
+  try {
+    if (typeof workspace.screenAt === "function") out = workspace.screenAt(pos);
+  } catch (e) {}
+  var payload = {x: Math.round(pos.x), y: Math.round(pos.y), monitor: outputName(out)};
+  try {
+    callDBus(CAP_SERVICE, CAP_PATH, CAP_IFACE, "Send", JSON.stringify(payload));
+  } catch (e) { vlog("sendPayload: callback error", e); }
+  try {
+    callDBus("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript", SCRIPT_NAME);
+  } catch (e) {}
+}
+
+sendPayload();
+`, scriptName, mustJSONString(scriptName), verbose,
+		mustJSONString(serviceName), mustJSONString(captureObjectPath), mustJSONString(captureIface))
+}
+
+func generateMouseHoveredWindowJS(scriptName, serviceName string, all bool, verbose bool) string {
+	return fmt.Sprintf(`// Auto-generated mouse hovered-window script: %s
+var SCRIPT_NAME = %s;
+var VERBOSE = %v;
+var HOVER_ALL = %v;
+var CAP_SERVICE = %s;
+var CAP_PATH = %s;
+var CAP_IFACE = %s;
+var TARGET_ID = "";
+var TARGET_APP = "";
+var TARGET_MATCH = "";
+var TARGET_CLASS = "";
+var TARGET_DESKTOP = "";
+var TARGET_MONITOR = "";
+var TARGET_STATES = [];
+var TARGET_ANY = false;
+var TARGET_LIMIT = 0;
+
+function vlog() {
+  if (!VERBOSE) return;
+  var msg = "[kwinl] ";
+  for (var i = 0; i < arguments.length; i++) msg += arguments[i] + " ";
+  print(msg);
+}
+
+%s
+
+function sendPayload() {
+  var pos = workspace.cursorPos;
+  var count = HOVER_ALL ? -1 : 1;
+  var wins = [];
+  try {
+    wins = workspace.windowAt(pos, count) || [];
+  } catch (e) { vlog("windowAt: error", e); }
+  var found = [];
+  for (var i = 0; i < wins.length; i++) {
+    if (isManageable(wins[i])) found.push(windowInfo(wins[i]));
+  }
+  try {
+    callDBus(CAP_SERVICE, CAP_PATH, CAP_IFACE, "Send", JSON.stringify({windows: found}));
+  } catch (e) { vlog("sendPayload: callback error", e); }
+  try {
+    callDBus("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript", SCRIPT_NAME);
+  } catch (e) {}
+}
+
+sendPayload();
+`, scriptName, mustJSONString(scriptName), verbose, all,
+		mustJSONString(serviceName), mustJSONString(captureObjectPath), mustJSONString(captureIface),
+		windowMatchingJS())
 }
 
 func generateJS(cfg jsPlacementConfig) string {

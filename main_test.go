@@ -7,7 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -88,17 +90,35 @@ func saveWindowFlags() func() {
 	savedID := windowIDFlag
 	savedApp := windowAppFlag
 	savedMatch := windowMatchFlag
+	savedClass := windowClassFlag
+	savedDesktop := windowDesktopFlag
+	savedMonitor := windowMonitorFlag
 	savedTimeout := windowTimeoutFlag
+	savedStates := slices.Clone(windowStateFlags)
+	savedLimit := windowLimitFlag
 	savedAll := windowAllFlag
 	savedJSON := windowJSONFlag
+	savedAny := windowAnyFlag
+	savedPos := windowPosFlag
+	savedSize := windowSizeFlag
+	savedGeom := windowGeomFlag
 
 	return func() {
 		windowIDFlag = savedID
 		windowAppFlag = savedApp
 		windowMatchFlag = savedMatch
+		windowClassFlag = savedClass
+		windowDesktopFlag = savedDesktop
+		windowMonitorFlag = savedMonitor
 		windowTimeoutFlag = savedTimeout
+		windowStateFlags = savedStates
+		windowLimitFlag = savedLimit
 		windowAllFlag = savedAll
 		windowJSONFlag = savedJSON
+		windowAnyFlag = savedAny
+		windowPosFlag = savedPos
+		windowSizeFlag = savedSize
+		windowGeomFlag = savedGeom
 	}
 }
 
@@ -498,7 +518,7 @@ func TestParseWindowSearchConfigAllowsEmptySelector(t *testing.T) {
 	}
 	defer os.RemoveAll(cfg.TempDir)
 
-	if cfg.Selector != (windowSelector{}) {
+	if cfg.Selector.HasSelectors() {
 		t.Fatalf("unexpected selector: %+v", cfg.Selector)
 	}
 
@@ -521,7 +541,7 @@ func TestParseWindowActionConfigRequiresSelector(t *testing.T) {
 		t.Fatal("expected validation error")
 	}
 
-	if !strings.Contains(err.Error(), "at least one of --id, --app, or --match is required") {
+	if !strings.Contains(err.Error(), "at least one selector is required") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -544,6 +564,129 @@ func TestParseWindowActionConfigAcceptsIDSelector(t *testing.T) {
 
 	if cfg.Selector.ID != "123" || cfg.Action != windowActionLower || !cfg.All {
 		t.Fatalf("unexpected action config: %+v", cfg)
+	}
+}
+
+func TestParseWindowSearchConfigAcceptsRichSelectors(t *testing.T) {
+	restore := saveWindowFlags()
+	defer restore()
+
+	windowClassFlag = "Navigator"
+	windowDesktopFlag = "current"
+	windowMonitorFlag = "DP-1"
+	windowStateFlags = []string{"minimized", "keep-above", "minimized"}
+	windowAnyFlag = true
+	windowLimitFlag = 3
+	windowTimeoutFlag = "2s"
+
+	cfg, err := parseWindowSearchConfig()
+	if err != nil {
+		t.Fatalf("parseWindowSearchConfig: %v", err)
+	}
+	defer os.RemoveAll(cfg.TempDir)
+
+	if cfg.Selector.Class != "Navigator" || cfg.Selector.Desktop != "current" || cfg.Selector.Monitor != "DP-1" {
+		t.Fatalf("unexpected selector: %+v", cfg.Selector)
+	}
+
+	if !cfg.Selector.Any || cfg.Selector.Limit != 3 {
+		t.Fatalf("unexpected any/limit selector: %+v", cfg.Selector)
+	}
+
+	if got := strings.Join(cfg.Selector.States, ","); got != "minimized,keep-above" {
+		t.Fatalf("unexpected states: %q", got)
+	}
+}
+
+func TestParseWindowActionConfigRejectsLimitWithoutAll(t *testing.T) {
+	restore := saveWindowFlags()
+	defer restore()
+
+	windowIDFlag = "123"
+	windowLimitFlag = 2
+	windowTimeoutFlag = "2s"
+
+	_, err := parseWindowActionConfig(windowActionRaise)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+
+	if !strings.Contains(err.Error(), "requires --all") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseWindowGeometryConfigParsesMoveResizeAndSet(t *testing.T) {
+	tests := []struct {
+		name string
+		mode windowGeometryMode
+		set  func()
+		want func(t *testing.T, cfg windowGeometryConfig)
+	}{
+		{
+			name: "move",
+			mode: windowGeometryModeMove,
+			set: func() {
+				windowPosFlag = "10%,20"
+			},
+			want: func(t *testing.T, cfg windowGeometryConfig) {
+				t.Helper()
+
+				if !cfg.Point.X.Percent || cfg.Point.X.Value != 10 || cfg.Point.Y.Value != 20 {
+					t.Fatalf("unexpected point: %+v", cfg.Point)
+				}
+			},
+		},
+		{
+			name: "resize",
+			mode: windowGeometryModeResize,
+			set: func() {
+				windowSizeFlag = "50%,600"
+			},
+			want: func(t *testing.T, cfg windowGeometryConfig) {
+				t.Helper()
+
+				if !cfg.Size.W.Percent || cfg.Size.W.Value != 50 || cfg.Size.H.Value != 600 {
+					t.Fatalf("unexpected size: %+v", cfg.Size)
+				}
+			},
+		},
+		{
+			name: "set",
+			mode: windowGeometryModeSet,
+			set: func() {
+				windowGeomFlag = "0,0,800,600"
+			},
+			want: func(t *testing.T, cfg windowGeometryConfig) {
+				t.Helper()
+
+				if cfg.Geom.W.Value != 800 || cfg.Geom.H.Value != 600 {
+					t.Fatalf("unexpected geometry: %+v", cfg.Geom)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			restore := saveWindowFlags()
+			defer restore()
+
+			windowIDFlag = "123"
+			windowAllFlag = true
+			windowLimitFlag = 1
+			windowTimeoutFlag = "2s"
+
+			tt.set()
+
+			cfg, err := parseWindowGeometryConfig(tt.mode)
+			if err != nil {
+				t.Fatalf("parseWindowGeometryConfig: %v", err)
+			}
+			defer os.RemoveAll(cfg.TempDir)
+
+			tt.want(t, cfg)
+		})
 	}
 }
 
@@ -989,8 +1132,40 @@ func TestGenerateWindowSearchJSSendsWindowPayload(t *testing.T) {
 		t.Fatalf("expected generated JS to include searchable window metadata, got:\n%s", js)
 	}
 
-	if !strings.Contains(js, `return idOK && appOK && matchOK;`) {
+	if !strings.Contains(js, `return selectorChecksMatch(checks);`) || !strings.Contains(js, `if (TARGET_ANY)`) {
 		t.Fatalf("expected generated JS to require all provided selectors, got:\n%s", js)
+	}
+}
+
+func TestGenerateWindowSearchJSSupportsRichSelectorsAndLimit(t *testing.T) {
+	t.Parallel()
+
+	js := generateWindowSearchJS(jsWindowSearchConfig{
+		ScriptName: "script",
+		Selector: windowSelector{
+			Class:   "Navigator",
+			Desktop: "current",
+			Monitor: "DP-1",
+			States:  []string{"minimized"},
+			Any:     true,
+			Limit:   2,
+		},
+		Verbose: false,
+		Service: "io.github.kwinl.Capture.test",
+	})
+
+	for _, want := range []string{
+		`var TARGET_CLASS = "Navigator";`,
+		`var TARGET_DESKTOP = "current";`,
+		`var TARGET_MONITOR = "DP-1";`,
+		`var TARGET_STATES = ["minimized"];`,
+		`var TARGET_ANY = true;`,
+		`var TARGET_LIMIT = 2;`,
+		`if (TARGET_LIMIT > 0 && found.length >= TARGET_LIMIT) break;`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("expected generated JS to contain %q, got:\n%s", want, js)
+		}
 	}
 }
 
@@ -1019,6 +1194,83 @@ func TestGenerateWindowActionJSSupportsRaiseAndLower(t *testing.T) {
 
 	if !strings.Contains(js, `if (!APPLY_ALL) break;`) {
 		t.Fatalf("expected generated JS to default to one topmost match, got:\n%s", js)
+	}
+}
+
+func TestGenerateWindowGeometryJSSetsFrameGeometry(t *testing.T) {
+	t.Parallel()
+
+	js := generateWindowGeometryJS(jsWindowGeometryConfig{
+		ScriptName: "script",
+		Selector:   windowSelector{ID: "123"},
+		Mode:       windowGeometryModeSet,
+		All:        true,
+		Geom: ParsedGeometry{
+			X: GeomValue{Value: 0},
+			Y: GeomValue{Value: 0},
+			W: GeomValue{Value: 800},
+			H: GeomValue{Value: 600},
+		},
+		CallbackService: "io.github.kwinl.Place.test",
+		CallbackToken:   "script",
+	})
+
+	if !strings.Contains(js, `w.frameGeometry = next;`) {
+		t.Fatalf("expected generated JS to set frameGeometry, got:\n%s", js)
+	}
+
+	if !strings.Contains(js, `case "set-geometry":`) {
+		t.Fatalf("expected generated JS to support set-geometry, got:\n%s", js)
+	}
+}
+
+func TestGenerateDesktopAndMouseJSScriptsUseKWinAPIs(t *testing.T) {
+	t.Parallel()
+
+	desktopJS := generateDesktopQueryJS("script", "io.github.kwinl.Capture.test", "current", false)
+	if !strings.Contains(desktopJS, `workspace.currentDesktop`) || !strings.Contains(desktopJS, `workspace.desktops`) {
+		t.Fatalf("expected desktop query JS to inspect KWin desktops, got:\n%s", desktopJS)
+	}
+
+	setJS := generateDesktopSetJS("script", "io.github.kwinl.Place.test", "2", false)
+	if !strings.Contains(setJS, `workspace.currentDesktop = desktop;`) {
+		t.Fatalf("expected desktop set JS to assign currentDesktop, got:\n%s", setJS)
+	}
+
+	locationJS := generateMouseLocationJS("script", "io.github.kwinl.Capture.test", false)
+	if !strings.Contains(locationJS, `workspace.cursorPos`) {
+		t.Fatalf("expected mouse location JS to inspect cursorPos, got:\n%s", locationJS)
+	}
+
+	hoverJS := generateMouseHoveredWindowJS("script", "io.github.kwinl.Capture.test", true, false)
+	if !strings.Contains(hoverJS, `workspace.windowAt(pos, count)`) {
+		t.Fatalf("expected hovered-window JS to call windowAt, got:\n%s", hoverJS)
+	}
+}
+
+func TestMouseInputCommandBuilders(t *testing.T) {
+	t.Parallel()
+
+	point := &mousePoint{X: 10, Y: 20}
+
+	click := buildMouseClickCommands("ydotool", "left", 2, point)
+
+	wantClick := []externalCommand{
+		{Name: "ydotool", Args: []string{"mousemove", "--absolute", "10", "20"}},
+		{Name: "ydotool", Args: []string{"click", "--repeat", "2", "0xC0"}},
+	}
+	if !reflect.DeepEqual(click, wantClick) {
+		t.Fatalf("unexpected ydotool click commands: %+v", click)
+	}
+
+	scroll := buildMouseScrollCommands("xdotool", -3, point)
+
+	wantScroll := []externalCommand{
+		{Name: "xdotool", Args: []string{"mousemove", "10", "20"}},
+		{Name: "xdotool", Args: []string{"click", "--repeat", "3", "4"}},
+	}
+	if !reflect.DeepEqual(scroll, wantScroll) {
+		t.Fatalf("unexpected xdotool scroll commands: %+v", scroll)
 	}
 }
 
