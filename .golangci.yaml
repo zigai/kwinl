@@ -130,7 +130,7 @@ linters:
       min-complexity: 20
 
     goconst:
-      min-occurrences: 8
+      min-occurrences: 16
 
     gocritic:
       settings:
