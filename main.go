@@ -595,8 +595,10 @@ type mousePoint struct {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "kwinl",
-	Short: "KWin window placement tool",
+	Use:           "kwinl",
+	Short:         "KWin window placement tool",
+	SilenceUsage:  true,
+	SilenceErrors: true,
 	Long: `kwinl loads temporary KWin scripts via D-Bus that intercept newly created
 windows and move/resize them to the requested geometry.`,
 	Version: fmt.Sprintf("kwinl %s (commit: %s, built: %s)", version, commit, date),
@@ -937,13 +939,10 @@ func addWindowGeometryFlags(cmd *cobra.Command, mode windowGeometryMode) {
 	switch mode {
 	case windowGeometryModeMove:
 		cmd.Flags().StringVar(&windowPosFlag, "pos", "", "target position as x,y")
-		must(cmd.MarkFlagRequired("pos"))
 	case windowGeometryModeResize:
 		cmd.Flags().StringVar(&windowSizeFlag, "size", "", "target size as width,height")
-		must(cmd.MarkFlagRequired("size"))
 	case windowGeometryModeSet:
 		cmd.Flags().StringVarP(&windowGeomFlag, "geom", "g", "", "target geometry as x,y,width,height")
-		must(cmd.MarkFlagRequired("geom"))
 	}
 }
 
@@ -991,9 +990,6 @@ func init() {
 	placeCmd.Flags().BoolVar(&placeMinimizedFlag, "minimized", false, "start window minimized")
 	placeCmd.Flags().BoolVar(&placeKeepAboveFlag, "keep-above", false, "keep window above others")
 	placeCmd.Flags().BoolVar(&placeKeepBelowFlag, "keep-below", false, "keep window below others")
-	must(placeCmd.MarkFlagRequired("geom"))
-	must(placeCmd.MarkFlagRequired("cmd"))
-
 	launchCmd.Flags().StringVarP(&launchTimeoutFlag, "timeout", "t", "", "timeout override (e.g., 10s)")
 	layoutsLaunchCmd.Flags().StringVarP(&launchTimeoutFlag, "timeout", "t", "", "timeout override (e.g., 10s)")
 
@@ -1011,7 +1007,6 @@ func init() {
 	mouseScrollCmd.Flags().StringVar(&mouseAtFlag, "at", "", "move pointer to x,y before sending input")
 	mouseScrollCmd.Flags().StringVar(&mouseBackendFlag, "backend", mouseBackendAuto, "input backend: auto, ydotool, or xdotool")
 	mouseScrollCmd.Flags().IntVar(&mouseScrollAmountFlag, "amount", 0, "signed scroll ticks; positive scrolls down, negative scrolls up")
-	must(mouseScrollCmd.MarkFlagRequired("amount"))
 
 	captureCmd.Flags().StringVarP(&captureTimeoutFlag, "timeout", "t", "2s", "capture timeout (e.g., 2s, 500ms)")
 	captureCmd.Flags().BoolVar(&captureInferCommandFlag, "infer-command", true, "infer a best-effort launcher command using gtk-launch")
@@ -1063,11 +1058,29 @@ func init() {
 	rootCmd.AddCommand(captureCmd)
 	rootCmd.AddCommand(validateCmd)
 	rootCmd.AddCommand(cleanupCmd)
+	rootCmd.InitDefaultCompletionCmd()
+	configureCompletionCommand(rootCmd)
 }
 
-func must(err error) {
-	if err != nil {
-		panic(err)
+func configureCompletionCommand(root *cobra.Command) {
+	completion, _, err := root.Find([]string{"completion"})
+	if err != nil || completion == root {
+		return
+	}
+
+	completion.Args = func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return nil
+		}
+
+		return &ValidationError{
+			Field:   "shell",
+			Value:   args[0],
+			Message: "valid shells: bash, fish, powershell, zsh",
+		}
+	}
+	completion.RunE = func(cmd *cobra.Command, args []string) error {
+		return cmd.Help()
 	}
 }
 
@@ -1101,11 +1114,34 @@ func exitCodeFor(err error) int {
 		return ee.Code
 	}
 
-	if isUsageError(err) {
+	if isUsageError(err) || isCobraUsageError(err) {
 		return exitCodeUsage
 	}
 
 	return exitCodeInternal
+}
+
+func isCobraUsageError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := err.Error()
+
+	usagePrefixes := []string{
+		"unknown command ",
+		"unknown flag: ",
+		"unknown shorthand flag: ",
+		"flag needs an argument: ",
+		"invalid argument ",
+	}
+	for _, prefix := range usagePrefixes {
+		if strings.HasPrefix(message, prefix) {
+			return true
+		}
+	}
+
+	return strings.Contains(message, " arg(s)")
 }
 
 func isUsageError(err error) bool {
