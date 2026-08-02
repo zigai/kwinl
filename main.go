@@ -3135,7 +3135,7 @@ func runCapture(cmd *cobra.Command, args []string) error {
 
 	template, err := buildTemplateFromCapturePayload(payload)
 	if err != nil {
-		return newExitError(exitCodeLoadFailed, fmt.Errorf("invalid capture payload: %w", err))
+		return capturePayloadError(err)
 	}
 
 	warnCaptureNonLaunchablePresets(template)
@@ -3146,6 +3146,15 @@ func runCapture(cmd *cobra.Command, args []string) error {
 	}
 
 	return writeCaptureOutput(outPath, data)
+}
+
+func capturePayloadError(err error) error {
+	var validationErr *ValidationError
+	if errors.As(err, &validationErr) && validationErr.Field == "capture" {
+		return newExitError(exitCodeNoMatch, err)
+	}
+
+	return newExitError(exitCodeLoadFailed, fmt.Errorf("invalid capture payload: %w", err))
 }
 
 func initCaptureCallback(conn *dbus.Conn) (*captureReceiver, string, error) {
