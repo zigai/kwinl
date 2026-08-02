@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -85,6 +87,9 @@ var (
 	errNoMatchingWindow                          = errors.New("no matching window found")
 	errNoCurrentDesktop                          = errors.New("no current desktop reported by KWin")
 	errNoMouseInputBackend                       = errors.New("no mouse input backend found; install ydotool or xdotool")
+	errYdotoolSocketLocation                     = errors.New("cannot locate ydotool daemon socket: XDG_RUNTIME_DIR and YDOTOOL_SOCKET are unset")
+	errXdotoolOnWayland                          = errors.New("xdotool is not supported in a Wayland session; start ydotoold and use --backend ydotool")
+	errXdotoolWithoutDisplay                     = errors.New("xdotool requires an X11 DISPLAY")
 	errSplitCommandUnfinishedEscape              = errors.New("unfinished escape at end of command")
 	errSplitCommandUnterminatedQuote             = errors.New("unterminated quote in command")
 	errInterruptedBySIGINT                       = errors.New("interrupted by SIGINT")
@@ -1004,7 +1009,7 @@ func init() {
 	mouseHoveredWindowCmd.Flags().BoolVar(&mouseAllFlag, "all", false, "return all manageable windows below the pointer")
 	addMouseClickFlags(mouseClickCmd, true)
 	mouseScrollCmd.Flags().StringVar(&mouseAtFlag, "at", "", "move pointer to x,y before sending input")
-	mouseScrollCmd.Flags().StringVar(&mouseBackendFlag, "backend", mouseBackendAuto, "input backend: auto or xdotool")
+	mouseScrollCmd.Flags().StringVar(&mouseBackendFlag, "backend", mouseBackendAuto, "input backend: auto, ydotool, or xdotool")
 	mouseScrollCmd.Flags().IntVar(&mouseScrollAmountFlag, "amount", 0, "signed scroll ticks; positive scrolls down, negative scrolls up")
 	must(mouseScrollCmd.MarkFlagRequired("amount"))
 
@@ -2054,24 +2059,31 @@ func optionalMousePoint(point mousePoint, ok bool) *mousePoint {
 func resolveMouseClickBackend(requested string, lookPath func(string) (string, error)) (string, error) {
 	switch strings.TrimSpace(requested) {
 	case "", mouseBackendAuto:
-		if _, err := lookPath(mouseBackendYdotool); err == nil {
+		ydotoolErr := validateYdotoolBackend(lookPath)
+		if ydotoolErr == nil {
 			return mouseBackendYdotool, nil
 		}
 
-		if _, err := lookPath(mouseBackendXdotool); err == nil {
+		xdotoolErr := validateXdotoolBackend(lookPath)
+		if xdotoolErr == nil {
 			return mouseBackendXdotool, nil
 		}
 
-		return "", newExitError(exitCodeLaunchFailed, errNoMouseInputBackend)
+		return "", newExitError(exitCodeLaunchFailed, fmt.Errorf(
+			"%w: ydotool: %w; xdotool: %w",
+			errNoMouseInputBackend,
+			ydotoolErr,
+			xdotoolErr,
+		))
 	case mouseBackendYdotool:
-		if _, err := lookPath(mouseBackendYdotool); err != nil {
-			return "", newExitError(exitCodeLaunchFailed, fmt.Errorf("ydotool not found: %w", err))
+		if err := validateYdotoolBackend(lookPath); err != nil {
+			return "", newExitError(exitCodeLaunchFailed, err)
 		}
 
 		return mouseBackendYdotool, nil
 	case mouseBackendXdotool:
-		if _, err := lookPath(mouseBackendXdotool); err != nil {
-			return "", newExitError(exitCodeLaunchFailed, fmt.Errorf("xdotool not found: %w", err))
+		if err := validateXdotoolBackend(lookPath); err != nil {
+			return "", newExitError(exitCodeLaunchFailed, err)
 		}
 
 		return mouseBackendXdotool, nil
@@ -2086,25 +2098,96 @@ func resolveMouseClickBackend(requested string, lookPath func(string) (string, e
 
 func resolveMouseScrollBackend(requested string, lookPath func(string) (string, error)) (string, error) {
 	switch strings.TrimSpace(requested) {
-	case "", mouseBackendAuto, mouseBackendXdotool:
-		if _, err := lookPath(mouseBackendXdotool); err != nil {
-			return "", newExitError(exitCodeLaunchFailed, fmt.Errorf("xdotool not found: %w", err))
+	case "", mouseBackendAuto:
+		ydotoolErr := validateYdotoolBackend(lookPath)
+		if ydotoolErr == nil {
+			return mouseBackendYdotool, nil
+		}
+
+		xdotoolErr := validateXdotoolBackend(lookPath)
+		if xdotoolErr == nil {
+			return mouseBackendXdotool, nil
+		}
+
+		return "", newExitError(exitCodeLaunchFailed, fmt.Errorf(
+			"%w: ydotool: %w; xdotool: %w",
+			errNoMouseInputBackend,
+			ydotoolErr,
+			xdotoolErr,
+		))
+	case mouseBackendYdotool:
+		if err := validateYdotoolBackend(lookPath); err != nil {
+			return "", newExitError(exitCodeLaunchFailed, err)
+		}
+
+		return mouseBackendYdotool, nil
+	case mouseBackendXdotool:
+		if err := validateXdotoolBackend(lookPath); err != nil {
+			return "", newExitError(exitCodeLaunchFailed, err)
 		}
 
 		return mouseBackendXdotool, nil
-	case mouseBackendYdotool:
-		return "", &ValidationError{
-			Field:   "backend",
-			Value:   requested,
-			Message: "scroll supports xdotool only",
-		}
 	default:
 		return "", &ValidationError{
 			Field:   "backend",
 			Value:   requested,
-			Message: "valid backends: auto, xdotool",
+			Message: "valid backends: auto, ydotool, xdotool",
 		}
 	}
+}
+
+func validateYdotoolBackend(lookPath func(string) (string, error)) error {
+	if _, err := lookPath(mouseBackendYdotool); err != nil {
+		return fmt.Errorf("ydotool not found: %w", err)
+	}
+
+	socketPath, err := ydotoolSocketPath()
+	if err != nil {
+		return err
+	}
+
+	dialer := new(net.Dialer)
+	dialer.Timeout = 250 * time.Millisecond
+
+	conn, err := dialer.DialContext(context.Background(), "unixgram", socketPath)
+	if err != nil {
+		return fmt.Errorf("ydotool daemon is unavailable at %s: %w", socketPath, err)
+	}
+
+	if err := conn.Close(); err != nil {
+		return fmt.Errorf("close ydotool daemon socket: %w", err)
+	}
+
+	return nil
+}
+
+func ydotoolSocketPath() (string, error) {
+	if socketPath := strings.TrimSpace(os.Getenv("YDOTOOL_SOCKET")); socketPath != "" {
+		return socketPath, nil
+	}
+
+	runtimeDir := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR"))
+	if runtimeDir == "" {
+		return "", errYdotoolSocketLocation
+	}
+
+	return filepath.Join(runtimeDir, ".ydotool_socket"), nil
+}
+
+func validateXdotoolBackend(lookPath func(string) (string, error)) error {
+	if strings.TrimSpace(os.Getenv("WAYLAND_DISPLAY")) != "" {
+		return errXdotoolOnWayland
+	}
+
+	if strings.TrimSpace(os.Getenv("DISPLAY")) == "" {
+		return errXdotoolWithoutDisplay
+	}
+
+	if _, err := lookPath(mouseBackendXdotool); err != nil {
+		return fmt.Errorf("xdotool not found: %w", err)
+	}
+
+	return nil
 }
 
 func buildMouseClickCommands(backend, button string, repeat int, point *mousePoint) []externalCommand {
@@ -2128,16 +2211,33 @@ func buildMouseClickCommands(backend, button string, repeat int, point *mousePoi
 func buildMouseScrollCommands(backend string, amount int, point *mousePoint) []externalCommand {
 	commands := mouseMoveCommands(backend, point)
 
-	button := "5"
-	if amount < 0 {
-		button = "4"
-		amount = -amount
-	}
+	switch backend {
+	case mouseBackendYdotool:
+		wheelAmount := strconv.Itoa(amount)
+		if amount > 0 {
+			wheelAmount = "-" + wheelAmount
+		} else {
+			wheelAmount = strings.TrimPrefix(wheelAmount, "-")
+		}
 
-	commands = append(commands, externalCommand{
-		Name: mouseBackendXdotool,
-		Args: []string{"click", "--repeat", strconv.Itoa(amount), button},
-	})
+		commands = append(commands, externalCommand{
+			Name: mouseBackendYdotool,
+			Args: []string{"mousemove", "--wheel", "--", "0", wheelAmount},
+		})
+	case mouseBackendXdotool:
+		button := "5"
+
+		repeat := strconv.Itoa(amount)
+		if amount < 0 {
+			button = "4"
+			repeat = strings.TrimPrefix(repeat, "-")
+		}
+
+		commands = append(commands, externalCommand{
+			Name: mouseBackendXdotool,
+			Args: []string{"click", "--repeat", repeat, button},
+		})
+	}
 
 	return commands
 }
