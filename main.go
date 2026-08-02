@@ -2669,7 +2669,9 @@ func runLaunchFromTemplate(template Template) error {
 
 	launchPhaseComplete = true
 
-	return waitAndCleanup(timeout, cmdProcs)
+	fmt.Printf("✓ launched %d preset(s)\n", len(template.Presets))
+
+	return nil
 }
 
 func writeLaunchPresetJSFile(presetRun launchPresetRun) error {
@@ -6759,9 +6761,6 @@ func launchCommand(cmdSlice []string) (*exec.Cmd, error) {
 
 	verbosef("expanded command: %v", expanded)
 	cmd := exec.Command(expanded[0], expanded[1:]...) //nolint:noctx // Launcher process is managed via process-group signal forwarding, not request-scoped context cancellation.
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 	cmd.Env = filteredEnv(os.Environ(),
 		"XDG_ACTIVATION_TOKEN",
 		"DESKTOP_STARTUP_ID",
@@ -6836,32 +6835,6 @@ func expandEnvVars(s string) string {
 	})
 
 	return s
-}
-
-func waitAndCleanup(timeout time.Duration, cmds []*exec.Cmd) error {
-	sigCh := make(chan os.Signal, 1)
-
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	select {
-	case <-timer.C:
-		return nil
-	case sig := <-sigCh:
-		signalProcessGroups(cmds, sig)
-
-		switch sig {
-		case syscall.SIGINT:
-			return newExitError(exitCodeInterrupted, errInterruptedBySIGINT)
-		case syscall.SIGTERM:
-			return newExitError(exitCodeTerminated, errInterruptedBySIGTERM)
-		default:
-			return newExitError(exitCodeTerminated, fmt.Errorf("%w %v", errInterruptedBySignal, sig))
-		}
-	}
 }
 
 func processGroupSysProcAttr() *syscall.SysProcAttr {
