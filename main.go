@@ -6302,7 +6302,7 @@ function applyAndStick(w) {
   }
 
   if (PINNED) {
-    try { w.desktops = workspace.desktops; } catch (e) {}
+    try { w.desktops = []; } catch (e) {}
   } else {
     if (targetDesk) {
       try { w.desktops = [targetDesk]; } catch (e) {}
