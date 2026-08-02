@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,7 +19,10 @@ import (
 	"time"
 )
 
-var errIntrospectionFailed = errors.New("introspection failed")
+var (
+	errIntrospectionFailed = errors.New("introspection failed")
+	errTestCLIUsage        = errors.New("test CLI usage error")
+)
 
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
@@ -47,6 +53,39 @@ func captureStderr(t *testing.T, fn func()) string {
 
 	if err := r.Close(); err != nil {
 		t.Fatalf("close stderr reader: %v", err)
+	}
+
+	return string(data)
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	oldStdout := os.Stdout
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stdout pipe: %v", err)
+	}
+
+	os.Stdout = w
+	defer func() {
+		os.Stdout = oldStdout
+	}()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stdout writer: %v", err)
+	}
+
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+
+	if err := r.Close(); err != nil {
+		t.Fatalf("close stdout reader: %v", err)
 	}
 
 	return string(data)
@@ -840,6 +879,10 @@ func TestLaunchCommandReapsFastExitingChild(t *testing.T) {
 		t.Fatalf("launch command: %v", err)
 	}
 
+	if cmd.Stdin != nil || cmd.Stdout != nil || cmd.Stderr != nil {
+		t.Fatalf("expected detached child streams, got stdin=%T stdout=%T stderr=%T", cmd.Stdin, cmd.Stdout, cmd.Stderr)
+	}
+
 	waitForLinuxProcessReaped(t, cmd.Process.Pid, 500*time.Millisecond)
 }
 
@@ -1020,13 +1063,13 @@ func TestWaitForLaunchPresetCallbackReturnsErrorOnTimeout(t *testing.T) {
 	}
 }
 
-func TestWaitForWindowActionReturnsReportedNoMatchExit(t *testing.T) {
+func TestWaitForWindowActionReturnsVisibleNoMatchExit(t *testing.T) {
 	t.Parallel()
 
 	ch := make(chan placeResult, 1)
 	ch <- placeResult{Success: false, Message: "no matching window found"}
 
-	err := waitForWindowAction(50*time.Millisecond, ch)
+	_, err := waitForWindowAction(50*time.Millisecond, ch)
 	if err == nil {
 		t.Fatal("expected no-match error")
 	}
@@ -1040,8 +1083,24 @@ func TestWaitForWindowActionReturnsReportedNoMatchExit(t *testing.T) {
 		t.Fatalf("unexpected exit code: got %d want %d", exitErr.Code, exitCodeNoMatch)
 	}
 
-	if !exitErr.Reported {
-		t.Fatal("expected no-match error to be marked as reported")
+	if exitErr.Reported {
+		t.Fatal("expected root error handling to report the no-match error")
+	}
+}
+
+func TestWaitForWindowActionReturnsSuccessMessage(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan placeResult, 1)
+	ch <- placeResult{Success: true, Message: "applied minimize to 2 window(s)"}
+
+	result, err := waitForWindowAction(50*time.Millisecond, ch)
+	if err != nil {
+		t.Fatalf("wait for action: %v", err)
+	}
+
+	if result.Message != "applied minimize to 2 window(s)" {
+		t.Fatalf("unexpected result: %+v", result)
 	}
 }
 
@@ -1108,6 +1167,19 @@ func TestGenerateJSAbortsOnInvalidTargetInsteadOfFallingBack(t *testing.T) {
 
 	if strings.Contains(js, `falling back to first output index 0`) {
 		t.Fatalf("expected generated JS to stop silent monitor fallback, got:\n%s", js)
+	}
+}
+
+func TestGenerateJSUsesEmptyDesktopListForPinnedWindows(t *testing.T) {
+	t.Parallel()
+
+	js := generateJS(jsPlacementConfig{Pinned: true})
+	if !strings.Contains(js, `w.desktops = [];`) {
+		t.Fatalf("expected pinned windows to use KWin's all-desktops representation, got:\n%s", js)
+	}
+
+	if strings.Contains(js, `w.desktops = workspace.desktops;`) {
+		t.Fatalf("expected obsolete pinned assignment to be absent, got:\n%s", js)
 	}
 }
 
@@ -1271,6 +1343,247 @@ func TestMouseInputCommandBuilders(t *testing.T) {
 	}
 	if !reflect.DeepEqual(scroll, wantScroll) {
 		t.Fatalf("unexpected xdotool scroll commands: %+v", scroll)
+	}
+
+	ydotoolDown := buildMouseScrollCommands("ydotool", 3, point)
+
+	wantYdotoolDown := []externalCommand{
+		{Name: "ydotool", Args: []string{"mousemove", "--absolute", "10", "20"}},
+		{Name: "ydotool", Args: []string{"mousemove", "--wheel", "--", "0", "-3"}},
+	}
+	if !reflect.DeepEqual(ydotoolDown, wantYdotoolDown) {
+		t.Fatalf("unexpected ydotool downward scroll commands: %+v", ydotoolDown)
+	}
+
+	ydotoolUp := buildMouseScrollCommands("ydotool", -3, nil)
+
+	wantYdotoolUp := []externalCommand{
+		{Name: "ydotool", Args: []string{"mousemove", "--wheel", "--", "0", "3"}},
+	}
+	if !reflect.DeepEqual(ydotoolUp, wantYdotoolUp) {
+		t.Fatalf("unexpected ydotool upward scroll commands: %+v", ydotoolUp)
+	}
+}
+
+func TestResolveMouseClickBackendRequiresHealthyYdotoolDaemon(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("DISPLAY", ":0")
+
+	socketPath := filepath.Join(t.TempDir(), "ydotool.sock")
+	t.Setenv("YDOTOOL_SOCKET", socketPath)
+
+	listenConfig := &net.ListenConfig{}
+
+	listener, err := listenConfig.ListenPacket(context.Background(), "unixgram", socketPath)
+	if err != nil {
+		t.Fatalf("listen on test ydotool socket: %v", err)
+	}
+	defer listener.Close()
+
+	lookPath := func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+
+	backend, err := resolveMouseClickBackend(mouseBackendAuto, lookPath)
+	if err != nil {
+		t.Fatalf("resolve backend: %v", err)
+	}
+
+	if backend != mouseBackendYdotool {
+		t.Fatalf("unexpected backend: got %q want %q", backend, mouseBackendYdotool)
+	}
+}
+
+func TestResolveMouseClickBackendRejectsWaylandXdotoolFallback(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("DISPLAY", ":0")
+	t.Setenv("YDOTOOL_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
+
+	lookPath := func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+
+	_, err := resolveMouseClickBackend(mouseBackendAuto, lookPath)
+	if err == nil {
+		t.Fatal("expected backend resolution error")
+	}
+
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) || exitErr.Code != exitCodeLaunchFailed {
+		t.Fatalf("expected launch ExitError, got %T: %v", err, err)
+	}
+
+	if !strings.Contains(err.Error(), "ydotool daemon is unavailable") ||
+		!strings.Contains(err.Error(), "xdotool is not supported in a Wayland session") {
+		t.Fatalf("unexpected diagnostic: %v", err)
+	}
+}
+
+func TestResolveMouseScrollBackendRejectsXdotoolOnWayland(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("DISPLAY", ":0")
+
+	lookPath := func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+
+	_, err := resolveMouseScrollBackend(mouseBackendXdotool, lookPath)
+	if err == nil || !strings.Contains(err.Error(), "not supported in a Wayland session") {
+		t.Fatalf("expected clear Wayland rejection, got %v", err)
+	}
+}
+
+func TestResolveMouseScrollBackendUsesHealthyYdotoolOnWayland(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("DISPLAY", ":0")
+
+	socketPath := filepath.Join(t.TempDir(), "ydotool.sock")
+	t.Setenv("YDOTOOL_SOCKET", socketPath)
+
+	listenConfig := &net.ListenConfig{}
+
+	listener, err := listenConfig.ListenPacket(context.Background(), "unixgram", socketPath)
+	if err != nil {
+		t.Fatalf("listen on test ydotool socket: %v", err)
+	}
+	defer listener.Close()
+
+	lookPath := func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+
+	backend, err := resolveMouseScrollBackend(mouseBackendAuto, lookPath)
+	if err != nil {
+		t.Fatalf("resolve backend: %v", err)
+	}
+
+	if backend != mouseBackendYdotool {
+		t.Fatalf("unexpected backend: got %q want %q", backend, mouseBackendYdotool)
+	}
+}
+
+func TestResolveMouseScrollBackendFallsBackToXdotoolOnX11(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("DISPLAY", ":0")
+	t.Setenv("YDOTOOL_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
+
+	lookPath := func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+
+	backend, err := resolveMouseScrollBackend(mouseBackendAuto, lookPath)
+	if err != nil {
+		t.Fatalf("resolve backend: %v", err)
+	}
+
+	if backend != mouseBackendXdotool {
+		t.Fatalf("unexpected backend: got %q want %q", backend, mouseBackendXdotool)
+	}
+}
+
+func TestHumanTablesHaveHeadersAndEmptyStates(t *testing.T) {
+	payload := `{"windows":[{"id":"1","app":"org.example.App","caption":"A title","geometry":"10,20,300,200","monitor":"DP-1","desktop":"Work"}]}`
+
+	output := captureStdout(t, func() {
+		if err := printWindowSearchPayload(payload, false); err != nil {
+			t.Fatalf("print window payload: %v", err)
+		}
+	})
+
+	if !strings.HasPrefix(output, "ID  APP") || !strings.Contains(output, "A title") {
+		t.Fatalf("unexpected table output:\n%s", output)
+	}
+
+	emptyOutput := captureStdout(t, func() {
+		if err := printWindowSearchPayload(`{"windows":[]}`, false); err != nil {
+			t.Fatalf("print empty window payload: %v", err)
+		}
+	})
+
+	if emptyOutput != "No windows found.\n" {
+		t.Fatalf("unexpected empty state: %q", emptyOutput)
+	}
+}
+
+func TestScriptMarkersRoundTripExactObjectPath(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	want := trackedScript{
+		Name:         "kwinl-test-123",
+		ObjectPath:   "/Scripting/Script42",
+		ServiceOwner: ":1.42",
+		MarkerPath:   "",
+	}
+	if err := writeScriptMarker(want); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	scripts, err := readScriptMarkers()
+	if err != nil {
+		t.Fatalf("read markers: %v", err)
+	}
+
+	if len(scripts) != 1 ||
+		scripts[0].Name != want.Name ||
+		scripts[0].ObjectPath != want.ObjectPath ||
+		scripts[0].ServiceOwner != want.ServiceOwner {
+		t.Fatalf("unexpected tracked scripts: %+v", scripts)
+	}
+
+	if err := removeScriptMarker(scripts[0]); err != nil {
+		t.Fatalf("remove marker: %v", err)
+	}
+
+	scripts, err = readScriptMarkers()
+	if err != nil {
+		t.Fatalf("read markers after removal: %v", err)
+	}
+
+	if len(scripts) != 0 {
+		t.Fatalf("expected marker removal, got %+v", scripts)
+	}
+}
+
+func TestCompletionRejectsUnsupportedShell(t *testing.T) {
+	completion, args, err := rootCmd.Find([]string{"completion", "tcsh"})
+	if err != nil {
+		t.Fatalf("find completion command: %v", err)
+	}
+
+	err = completion.Args(completion, args)
+	if err == nil {
+		t.Fatal("expected unsupported shell error")
+	}
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected ValidationError, got %T", err)
+	}
+}
+
+func TestCapturePayloadErrorUsesNoMatchExitForEmptyCapture(t *testing.T) {
+	t.Parallel()
+
+	err := capturePayloadError(&ValidationError{Field: "capture", Message: "no capturable windows found"})
+
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) || exitErr.Code != exitCodeNoMatch {
+		t.Fatalf("expected no-match ExitError, got %T: %v", err, err)
+	}
+}
+
+func TestCobraUsageErrorsUseUsageExitCode(t *testing.T) {
+	t.Parallel()
+
+	for _, err := range []error{
+		fmt.Errorf(`unknown command "wat" for "kwinl": %w`, errTestCLIUsage),
+		fmt.Errorf("unknown flag: --wat: %w", errTestCLIUsage),
+		fmt.Errorf("unknown shorthand flag: 'w' in -w: %w", errTestCLIUsage),
+		fmt.Errorf("accepts 1 arg(s), received 0: %w", errTestCLIUsage),
+	} {
+		if got := exitCodeFor(err); got != exitCodeUsage {
+			t.Fatalf("unexpected exit code for %q: got %d want %d", err, got, exitCodeUsage)
+		}
 	}
 }
 
