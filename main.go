@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -1318,7 +1319,7 @@ func waitForPlaceCommand(timeout time.Duration, results <-chan placeResult, cmdP
 	return waitAndCleanup()
 }
 
-func waitForWindowAction(timeout time.Duration, resultCh <-chan placeResult) error {
+func waitForWindowAction(timeout time.Duration, resultCh <-chan placeResult) (placeResult, error) {
 	sigCh := make(chan os.Signal, 1)
 
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -1333,25 +1334,25 @@ func waitForWindowAction(timeout time.Duration, resultCh <-chan placeResult) err
 			result.Success, result.WindowID, result.Caption, result.Geometry)
 
 		if result.Success {
-			return nil
+			return result, nil
 		}
 
 		message := strings.TrimSpace(result.Message)
 		if message == "" || message == errNoMatchingWindow.Error() {
-			return reportedExitError(exitCodeNoMatch, errNoMatchingWindow)
+			return placeResult{}, newExitError(exitCodeNoMatch, errNoMatchingWindow)
 		}
 
-		return &ValidationError{Field: "target", Value: "", Message: message}
+		return placeResult{}, &ValidationError{Field: "target", Value: "", Message: message}
 	case <-timer.C:
-		return newExitError(exitCodeLoadFailed, fmt.Errorf("window action timed out after %s (%w)", timeout, errNoMatchingWindow))
+		return placeResult{}, newExitError(exitCodeLoadFailed, fmt.Errorf("window action timed out after %s (%w)", timeout, errNoMatchingWindow))
 	case sig := <-sigCh:
 		switch sig {
 		case syscall.SIGINT:
-			return newExitError(exitCodeInterrupted, errInterruptedBySIGINT)
+			return placeResult{}, newExitError(exitCodeInterrupted, errInterruptedBySIGINT)
 		case syscall.SIGTERM:
-			return newExitError(exitCodeTerminated, errInterruptedBySIGTERM)
+			return placeResult{}, newExitError(exitCodeTerminated, errInterruptedBySIGTERM)
 		default:
-			return newExitError(exitCodeTerminated, fmt.Errorf("%w %v", errInterruptedBySignal, sig))
+			return placeResult{}, newExitError(exitCodeTerminated, fmt.Errorf("%w %v", errInterruptedBySignal, sig))
 		}
 	}
 }
@@ -1434,35 +1435,40 @@ func runWindowsAction(action string) error {
 		return newExitError(exitCodeLoadFailed, err)
 	}
 
-	return waitForWindowAction(cfg.Timeout, recv.ch)
+	result, err := waitForWindowAction(cfg.Timeout, recv.ch)
+	if err != nil {
+		return err
+	}
+
+	return printActionSuccess(result, "window action completed")
 }
 
-func runGeneratedActionScript(scriptName, jsFile string, timeout time.Duration, render func(callbackService string) string) error {
+func runGeneratedActionScript(scriptName, jsFile string, timeout time.Duration, render func(callbackService string) string) (placeResult, error) {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
-		return newExitError(exitCodeDBusFailure, fmt.Errorf("cannot connect to session D-Bus: %w", err))
+		return placeResult{}, newExitError(exitCodeDBusFailure, fmt.Errorf("cannot connect to session D-Bus: %w", err))
 	}
 
 	defer closeDBusConnWarn(conn)
 
 	recv, callbackService, err := initPlaceCallback(conn)
 	if err != nil {
-		return err
+		return placeResult{}, err
 	}
 
 	if err := os.WriteFile(jsFile, []byte(render(callbackService)), 0o600); err != nil {
-		return fmt.Errorf("write generated action JS file %q: %w", jsFile, err)
+		return placeResult{}, fmt.Errorf("write generated action JS file %q: %w", jsFile, err)
 	}
 
 	scriptPath, err := loadWindowScriptPath(conn, jsFile, scriptName)
 	if err != nil {
-		return err
+		return placeResult{}, err
 	}
 
 	defer unloadScript(conn, scriptName)
 
 	if err := runScript(conn, scriptName, scriptPath); err != nil {
-		return newExitError(exitCodeLoadFailed, err)
+		return placeResult{}, newExitError(exitCodeLoadFailed, err)
 	}
 
 	return waitForWindowAction(timeout, recv.ch)
@@ -1517,7 +1523,7 @@ func runWindowsGeometry(mode windowGeometryMode) error {
 
 	defer removeTempDirWarn(cfg.TempDir)
 
-	return runGeneratedActionScript(
+	result, err := runGeneratedActionScript(
 		cfg.ScriptName,
 		cfg.JSFile,
 		cfg.Timeout,
@@ -1536,6 +1542,25 @@ func runWindowsGeometry(mode windowGeometryMode) error {
 			})
 		},
 	)
+	if err != nil {
+		return err
+	}
+
+	return printActionSuccess(result, "window geometry updated")
+}
+
+func printActionSuccess(result placeResult, fallback string) error {
+	message := strings.TrimSpace(result.Message)
+	if message == "" {
+		message = fallback
+	}
+
+	_, err := fmt.Fprintf(os.Stdout, "✓ %s\n", message)
+	if err != nil {
+		return fmt.Errorf("write action confirmation: %w", err)
+	}
+
+	return nil
 }
 
 func parseWindowSelector(allowEmpty bool) (windowSelector, error) {
@@ -1856,9 +1881,14 @@ func runDesktopsSet(cmd *cobra.Command, args []string) error {
 
 	jsFile := filepath.Join(tempDir, scriptName+".js")
 
-	return runGeneratedActionScript(scriptName, jsFile, timeout, func(callbackService string) string {
+	result, err := runGeneratedActionScript(scriptName, jsFile, timeout, func(callbackService string) string {
 		return generateDesktopSetJS(scriptName, callbackService, target, verboseFlag)
 	})
+	if err != nil {
+		return err
+	}
+
+	return printActionSuccess(result, "switched desktop")
 }
 
 func printDesktopListPayload(payload string, jsonOutput bool) error {
@@ -1878,16 +1908,17 @@ func printDesktopListPayload(payload string, jsonOutput bool) error {
 		return nil
 	}
 
+	rows := make([][]string, 0, len(parsed.Desktops))
 	for _, desktop := range parsed.Desktops {
 		state := "-"
 		if desktop.Current {
 			state = "current"
 		}
 
-		fmt.Printf("%d\t%s\t%s\t%s\n", desktop.Index, desktop.ID, desktop.Name, state)
+		rows = append(rows, []string{strconv.Itoa(desktop.Index), desktop.ID, desktop.Name, state})
 	}
 
-	return nil
+	return writeHumanTable([]string{"INDEX", "ID", "NAME", "STATE"}, rows, "No virtual desktops found.")
 }
 
 func printDesktopCurrentPayload(payload string, jsonOutput bool) error {
@@ -1911,9 +1942,11 @@ func printDesktopCurrentPayload(payload string, jsonOutput bool) error {
 		return newExitError(exitCodeLoadFailed, errNoCurrentDesktop)
 	}
 
-	fmt.Printf("%d\t%s\t%s\n", parsed.Current.Index, parsed.Current.ID, parsed.Current.Name)
-
-	return nil
+	return writeHumanTable(
+		[]string{"INDEX", "ID", "NAME"},
+		[][]string{{strconv.Itoa(parsed.Current.Index), parsed.Current.ID, parsed.Current.Name}},
+		"",
+	)
 }
 
 func runMouseLocation(cmd *cobra.Command, args []string) error {
@@ -1965,9 +1998,11 @@ func printMouseLocationPayload(payload string, jsonOutput bool) error {
 		return nil
 	}
 
-	fmt.Printf("%d\t%d\t%s\n", parsed.X, parsed.Y, parsed.Monitor)
-
-	return nil
+	return writeHumanTable(
+		[]string{"X", "Y", "MONITOR"},
+		[][]string{{strconv.Itoa(parsed.X), strconv.Itoa(parsed.Y), parsed.Monitor}},
+		"",
+	)
 }
 
 func printHoveredWindowPayload(payload string, jsonOutput bool) error {
@@ -1977,7 +2012,7 @@ func printHoveredWindowPayload(payload string, jsonOutput bool) error {
 	}
 
 	if len(parsed.Windows) == 0 {
-		return reportedExitError(exitCodeNoMatch, errNoMatchingWindow)
+		return newExitError(exitCodeNoMatch, errNoMatchingWindow)
 	}
 
 	return printWindowSearchPayload(payload, jsonOutput)
@@ -2015,7 +2050,16 @@ func runMouseClick(buttonOverride string) error {
 
 	commands := buildMouseClickCommands(backend, button, repeat, optionalMousePoint(point, hasPoint))
 
-	return runExternalCommands(commands)
+	if err := runExternalCommands(commands); err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintf(os.Stdout, "✓ clicked %s button %d time(s) with %s\n", button, repeat, backend)
+	if err != nil {
+		return fmt.Errorf("write click confirmation: %w", err)
+	}
+
+	return nil
 }
 
 func runMouseScroll(cmd *cobra.Command, args []string) error {
@@ -2036,7 +2080,16 @@ func runMouseScroll(cmd *cobra.Command, args []string) error {
 
 	commands := buildMouseScrollCommands(backend, amount, optionalMousePoint(point, hasPoint))
 
-	return runExternalCommands(commands)
+	if err := runExternalCommands(commands); err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintf(os.Stdout, "✓ scrolled %d tick(s) with %s\n", amount, backend)
+	if err != nil {
+		return fmt.Errorf("write scroll confirmation: %w", err)
+	}
+
+	return nil
 }
 
 func validateMouseButton(button string) error {
@@ -2333,7 +2386,7 @@ func xdotoolButtonCode(button string) string {
 func runExternalCommands(commands []externalCommand) error {
 	for _, command := range commands {
 		cmd := exec.Command(command.Name, command.Args...) //nolint:noctx // Short-lived local input tools do not need request-scoped cancellation.
-		cmd.Stdout = os.Stdout
+		cmd.Stdout = os.Stderr
 
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
@@ -2409,12 +2462,67 @@ func printWindowSearchPayload(payload string, jsonOutput bool) error {
 		return nil
 	}
 
-	for _, w := range parsed.Windows {
-		fmt.Printf("%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			w.ID, w.App, w.Caption, w.Geometry, w.Monitor, w.Desktop, windowStateString(w))
+	rows := make([][]string, 0, len(parsed.Windows))
+	for _, window := range parsed.Windows {
+		rows = append(rows, []string{
+			window.ID,
+			window.App,
+			window.Caption,
+			window.Geometry,
+			window.Monitor,
+			window.Desktop,
+			windowStateString(window),
+		})
+	}
+
+	return writeHumanTable(
+		[]string{"ID", "APP", "TITLE", "GEOMETRY", "MONITOR", "DESKTOP", "STATES"},
+		rows,
+		"No windows found.",
+	)
+}
+
+func writeHumanTable(headers []string, rows [][]string, emptyMessage string) error {
+	if len(rows) == 0 {
+		if emptyMessage == "" {
+			return nil
+		}
+
+		_, err := fmt.Fprintln(os.Stdout, emptyMessage)
+		if err != nil {
+			return fmt.Errorf("write empty table state: %w", err)
+		}
+
+		return nil
+	}
+
+	writer := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	if _, err := fmt.Fprintln(writer, strings.Join(headers, "\t")); err != nil {
+		return fmt.Errorf("write table header: %w", err)
+	}
+
+	for _, row := range rows {
+		cells := make([]string, len(row))
+		for index, cell := range row {
+			cells[index] = sanitizeTableCell(cell)
+		}
+
+		if _, err := fmt.Fprintln(writer, strings.Join(cells, "\t")); err != nil {
+			return fmt.Errorf("write table row: %w", err)
+		}
+	}
+
+	if err := writer.Flush(); err != nil {
+		return fmt.Errorf("flush table output: %w", err)
 	}
 
 	return nil
+}
+
+func sanitizeTableCell(value string) string {
+	replacer := strings.NewReplacer("\t", " ", "\r", " ", "\n", " ")
+
+	return replacer.Replace(value)
 }
 
 func windowStateString(w windowInfo) string {
@@ -2578,11 +2686,14 @@ func runLayoutsList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to list layouts in %q: %w", layoutsDir, err)
 	}
 
-	for _, item := range formatLayoutList(layouts) {
-		fmt.Println(item)
+	items := formatLayoutList(layouts)
+
+	rows := make([][]string, 0, len(items))
+	for _, item := range items {
+		rows = append(rows, []string{item})
 	}
 
-	return nil
+	return writeHumanTable([]string{"LAYOUT"}, rows, "No saved layouts found.")
 }
 
 func runLayoutsRemove(cmd *cobra.Command, args []string) error {
@@ -2595,7 +2706,7 @@ func runLayoutsRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to remove layout %q: %w", layout.File, err)
 	}
 
-	fmt.Printf("removed: %s\n", layout.File)
+	fmt.Printf("✓ removed %s\n", layout.File)
 
 	return nil
 }
