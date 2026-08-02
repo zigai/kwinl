@@ -19,8 +19,8 @@ Declarative window placement for KWin: launch programs into predefined geometrie
 
 - KDE Plasma with KWin
 - Session D-Bus access
-- Optional for `kwinl mouse click`: `ydotool` or `xdotool`
-- Optional for `kwinl mouse scroll`: `xdotool`
+- Optional for `kwinl mouse click`: a running `ydotoold`, or `xdotool` in an X11 session
+- Optional for `kwinl mouse scroll`: a running `ydotoold`, or `xdotool` in an X11 session
 
 ## Installation
 
@@ -152,7 +152,7 @@ Available actions:
   toggle-keep-above, toggle-keep-below, clear-stacking, close
 
 Search output columns:
-  id, app, title, geometry, monitor, desktop, states
+  ID, APP, TITLE, GEOMETRY, MONITOR, DESKTOP, STATES
 
 Action behavior:
   - Actions target the topmost matching window by default.
@@ -196,15 +196,18 @@ Query examples:
 Input examples:
   kwinl mouse click
   kwinl mouse click --button middle --repeat 2 --at 500,400
-  kwinl mouse left-click --at 100,100
-  kwinl mouse right-click
+  kwinl mouse click --button left --at 100,100
+  kwinl mouse click --button right
   kwinl mouse scroll --amount 5
   kwinl mouse scroll --amount -3 --at 500,400
 
 Notes:
   - Location and hovered-window use KWin scripting.
-  - Click uses ydotool when available, otherwise xdotool.
-  - Scroll uses xdotool wheel-button events.
+  - Click and scroll auto-select ydotool only when its daemon socket is reachable.
+  - Scroll uses ydotool wheel events on Wayland and can fall back to xdotool wheel-button events on X11.
+  - On Wayland, start ydotoold before using click or scroll; xdotool is rejected
+    instead of opening a KWin remote-control prompt.
+  - Exact ydotool placement with `--at` requires pointer acceleration to be disabled.
 ```
 
 #### kwinl layouts list
@@ -217,8 +220,9 @@ Usage:
 
 Behavior:
   - Creates ~/.config/kwinl if it does not exist
-  - Prints one layout name per line
+  - Prints a LAYOUT header followed by one layout name per line
   - Names are shown without extension
+  - Prints "No saved layouts found." when the directory is empty
   - If multiple files share the same basename, entries are disambiguated as:
       work (work.yaml)
       work (work.json)
@@ -290,6 +294,7 @@ Examples:
 Notes:
   - If no output path is provided, output is written to stdout.
   - Use `-` explicitly to force stdout output.
+  - If the active filters contain no capturable windows, the command exits with code 30.
 
 Flags:
   -d, --current-desktop    only capture windows on current desktop
@@ -348,7 +353,9 @@ Global Flags:
 #### kwinl cleanup
 
 ```
-Discovers and unloads KWin scripts matching kwinl-* pattern.
+Discovers and unloads orphaned kwinl scripts. Newly loaded scripts are recorded with
+their exact KWin object path so cleanup works on KWin 6 after an interrupted or killed
+kwinl process; legacy script discovery remains available for compatibility.
 
 Usage:
   kwinl cleanup [flags]
