@@ -803,28 +803,6 @@ var mouseClickCmd = &cobra.Command{
 	},
 }
 
-var mouseLeftClickCmd = &cobra.Command{
-	Use:           "left-click",
-	Short:         "Left click at the current or requested pointer location",
-	Args:          cobra.NoArgs,
-	SilenceUsage:  true,
-	SilenceErrors: true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runMouseClick("left")
-	},
-}
-
-var mouseRightClickCmd = &cobra.Command{
-	Use:           "right-click",
-	Short:         "Right click at the current or requested pointer location",
-	Args:          cobra.NoArgs,
-	SilenceUsage:  true,
-	SilenceErrors: true,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runMouseClick("right")
-	},
-}
-
 var mouseScrollCmd = &cobra.Command{
 	Use:           "scroll --amount <signed-ticks>",
 	Short:         "Scroll at the current or requested pointer location",
@@ -1025,8 +1003,6 @@ func init() {
 	addMouseQueryFlags(mouseHoveredWindowCmd)
 	mouseHoveredWindowCmd.Flags().BoolVar(&mouseAllFlag, "all", false, "return all manageable windows below the pointer")
 	addMouseClickFlags(mouseClickCmd, true)
-	addMouseClickFlags(mouseLeftClickCmd, false)
-	addMouseClickFlags(mouseRightClickCmd, false)
 	mouseScrollCmd.Flags().StringVar(&mouseAtFlag, "at", "", "move pointer to x,y before sending input")
 	mouseScrollCmd.Flags().StringVar(&mouseBackendFlag, "backend", mouseBackendAuto, "input backend: auto or xdotool")
 	mouseScrollCmd.Flags().IntVar(&mouseScrollAmountFlag, "amount", 0, "signed scroll ticks; positive scrolls down, negative scrolls up")
@@ -1071,8 +1047,6 @@ func init() {
 	mouseCmd.AddCommand(mouseLocationCmd)
 	mouseCmd.AddCommand(mouseHoveredWindowCmd)
 	mouseCmd.AddCommand(mouseClickCmd)
-	mouseCmd.AddCommand(mouseLeftClickCmd)
-	mouseCmd.AddCommand(mouseRightClickCmd)
 	mouseCmd.AddCommand(mouseScrollCmd)
 
 	rootCmd.AddCommand(placeCmd)
