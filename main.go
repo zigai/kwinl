@@ -90,6 +90,7 @@ var (
 	errYdotoolSocketLocation                     = errors.New("cannot locate ydotool daemon socket: XDG_RUNTIME_DIR and YDOTOOL_SOCKET are unset")
 	errXdotoolOnWayland                          = errors.New("xdotool is not supported in a Wayland session; start ydotoold and use --backend ydotool")
 	errXdotoolWithoutDisplay                     = errors.New("xdotool requires an X11 DISPLAY")
+	errInvalidScriptName                         = errors.New("invalid kwinl script name")
 	errSplitCommandUnfinishedEscape              = errors.New("unfinished escape at end of command")
 	errSplitCommandUnterminatedQuote             = errors.New("unterminated quote in command")
 	errInterruptedBySIGINT                       = errors.New("interrupted by SIGINT")
@@ -242,6 +243,13 @@ type layoutFile struct {
 	Base string
 	File string
 	Path string
+}
+
+type trackedScript struct {
+	Name         string `json:"name"`
+	ObjectPath   string `json:"objectPath,omitempty"`
+	ServiceOwner string `json:"serviceOwner,omitempty"`
+	MarkerPath   string `json:"-"`
 }
 
 type CommandSpec []string
@@ -3325,32 +3333,48 @@ func runCleanup(cmd *cobra.Command, args []string) error {
 
 	count := 0
 
-	for _, scriptName := range scripts {
+	var unloadErrors []error
+
+	for _, script := range scripts {
 		if cleanupDryRunFlag {
-			fmt.Printf("would unload: %s\n", scriptName)
+			fmt.Printf("would unload: %s\n", script.Name)
 		} else {
-			verbosef("unloading script %s", scriptName)
+			verbosef("unloading script %s", script.Name)
 
-			obj := conn.Object(dbusDestination, dbus.ObjectPath(dbusScriptingPath))
+			if err := unloadTrackedScript(conn, script); err != nil {
+				unloadErrors = append(unloadErrors, err)
+				fmt.Fprintf(os.Stderr, "failed to unload %s: %v\n", script.Name, err)
 
-			call := obj.Call(dbusScriptingIface+".unloadScript", 0, scriptName)
-			if call.Err != nil {
-				verbosef("unload failed for %s: %v", scriptName, call.Err)
 				continue
 			}
 
-			fmt.Printf("unloaded: %s\n", scriptName)
+			if err := removeScriptMarker(script); err != nil {
+				unloadErrors = append(unloadErrors, err)
+				fmt.Fprintf(os.Stderr, "failed to remove tracking marker for %s: %v\n", script.Name, err)
+
+				continue
+			}
+
+			fmt.Printf("✓ unloaded %s\n", script.Name)
 		}
 
 		count++
 	}
 
-	fmt.Printf("total: %d script(s)\n", count)
+	if cleanupDryRunFlag {
+		fmt.Printf("total: %d script(s)\n", count)
+	} else {
+		fmt.Printf("✓ unloaded %d script(s)\n", count)
+	}
+
+	if len(unloadErrors) > 0 {
+		return newExitError(exitCodeDBusFailure, fmt.Errorf("failed to clean up %d script(s): %w", len(unloadErrors), errors.Join(unloadErrors...)))
+	}
 
 	return nil
 }
 
-func validateCleanupDiscovery(scripts []string, err error) ([]string, error) {
+func validateCleanupDiscovery(scripts []trackedScript, err error) ([]trackedScript, error) {
 	if err == nil {
 		return scripts, nil
 	}
@@ -3358,7 +3382,39 @@ func validateCleanupDiscovery(scripts []string, err error) ([]string, error) {
 	return nil, newExitError(exitCodeDBusFailure, err)
 }
 
-func discoverKwinLayoutScripts(conn *dbus.Conn) ([]string, error) {
+func discoverKwinLayoutScripts(conn *dbus.Conn) ([]trackedScript, error) {
+	tracked, err := readScriptMarkers()
+	if err != nil {
+		return nil, fmt.Errorf("read script tracking markers: %w", err)
+	}
+
+	legacy, err := discoverLegacyKwinLayoutScripts(conn)
+	if err != nil {
+		if len(tracked) == 0 {
+			return nil, err
+		}
+
+		verbosef("legacy script discovery failed; using exact tracking markers: %v", err)
+
+		return tracked, nil
+	}
+
+	seen := make(map[string]bool, len(tracked)+len(legacy))
+
+	merged := make([]trackedScript, 0, len(tracked)+len(legacy))
+	for _, script := range append(tracked, legacy...) {
+		if seen[script.Name] {
+			continue
+		}
+
+		seen[script.Name] = true
+		merged = append(merged, script)
+	}
+
+	return merged, nil
+}
+
+func discoverLegacyKwinLayoutScripts(conn *dbus.Conn) ([]trackedScript, error) {
 	obj := conn.Object(dbusDestination, dbus.ObjectPath(dbusScriptingPath))
 
 	var xmlData string
@@ -3370,7 +3426,7 @@ func discoverKwinLayoutScripts(conn *dbus.Conn) ([]string, error) {
 
 	verbosef("introspection result: %d bytes", len(xmlData))
 
-	var scripts []string
+	var scripts []trackedScript
 
 	scriptPathRe := regexp.MustCompile(`<node name="(Script\d+)"`)
 	matches := scriptPathRe.FindAllStringSubmatch(xmlData, -1)
@@ -3403,11 +3459,238 @@ func discoverKwinLayoutScripts(conn *dbus.Conn) ([]string, error) {
 		verbosef("found script: %s", name)
 
 		if strings.HasPrefix(name, "kwinl-") {
-			scripts = append(scripts, name)
+			scripts = append(scripts, trackedScript{Name: name, ObjectPath: scriptPath, ServiceOwner: "", MarkerPath: ""})
 		}
 	}
 
 	return scripts, nil
+}
+
+func scriptMarkerDir() (string, error) {
+	if runtimeDir := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR")); runtimeDir != "" && filepath.IsAbs(runtimeDir) {
+		return filepath.Join(runtimeDir, "kwinl", "scripts"), nil
+	}
+
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("determine user cache directory: %w", err)
+	}
+
+	return filepath.Join(cacheDir, "kwinl", "runtime", "scripts"), nil
+}
+
+func scriptMarkerPath(scriptName string) (string, error) {
+	if !strings.HasPrefix(scriptName, "kwinl-") || filepath.Base(scriptName) != scriptName {
+		return "", fmt.Errorf("%w %q", errInvalidScriptName, scriptName)
+	}
+
+	dir, err := scriptMarkerDir()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(dir, scriptName+".json"), nil
+}
+
+func writeScriptMarker(script trackedScript) error {
+	markerPath, err := scriptMarkerPath(script.Name)
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(markerPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create marker directory %q: %w", dir, err)
+	}
+
+	data, err := json.Marshal(script)
+	if err != nil {
+		return fmt.Errorf("marshal marker: %w", err)
+	}
+
+	temp, err := os.CreateTemp(dir, ".marker-*")
+	if err != nil {
+		return fmt.Errorf("create temporary marker: %w", err)
+	}
+
+	tempPath := temp.Name()
+
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+
+		return fmt.Errorf("set marker permissions: %w", err)
+	}
+
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+
+		return fmt.Errorf("write marker: %w", err)
+	}
+
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close marker: %w", err)
+	}
+
+	if err := os.Rename(tempPath, markerPath); err != nil {
+		return fmt.Errorf("commit marker %q: %w", markerPath, err)
+	}
+
+	committed = true
+
+	return nil
+}
+
+func readScriptMarkers() ([]trackedScript, error) {
+	dir, err := scriptMarkerDir()
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("read marker directory %q: %w", dir, err)
+	}
+
+	scripts := make([]trackedScript, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+
+		markerPath := filepath.Join(dir, entry.Name())
+
+		data, readErr := os.ReadFile(markerPath)
+		if readErr != nil {
+			log.Printf("warning: failed to read script marker %s: %v", markerPath, readErr)
+			continue
+		}
+
+		var script trackedScript
+		if jsonErr := json.Unmarshal(data, &script); jsonErr != nil {
+			log.Printf("warning: ignored invalid script marker %s: %v", markerPath, jsonErr)
+			continue
+		}
+
+		expectedPath, pathErr := scriptMarkerPath(script.Name)
+		if pathErr != nil || expectedPath != markerPath {
+			log.Printf("warning: ignored mismatched script marker %s", markerPath)
+			continue
+		}
+
+		script.MarkerPath = markerPath
+		scripts = append(scripts, script)
+	}
+
+	return scripts, nil
+}
+
+func readScriptMarker(scriptName string) trackedScript {
+	markerPath, err := scriptMarkerPath(scriptName)
+	if err != nil {
+		return trackedScript{Name: scriptName, ObjectPath: "", ServiceOwner: "", MarkerPath: ""}
+	}
+
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		return trackedScript{Name: scriptName, ObjectPath: "", ServiceOwner: "", MarkerPath: ""}
+	}
+
+	var script trackedScript
+	if err := json.Unmarshal(data, &script); err != nil || script.Name != scriptName {
+		return trackedScript{Name: scriptName, ObjectPath: "", ServiceOwner: "", MarkerPath: markerPath}
+	}
+
+	script.MarkerPath = markerPath
+
+	return script
+}
+
+func removeScriptMarker(script trackedScript) error {
+	markerPath := script.MarkerPath
+	if markerPath == "" {
+		var err error
+
+		markerPath, err = scriptMarkerPath(script.Name)
+		if err != nil {
+			return err
+		}
+	}
+
+	if err := os.Remove(markerPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove marker %q: %w", markerPath, err)
+	}
+
+	return nil
+}
+
+func unloadTrackedScript(conn *dbus.Conn, script trackedScript) error {
+	scriptingObj := conn.Object(dbusDestination, dbus.ObjectPath(dbusScriptingPath))
+
+	unloadCall := scriptingObj.Call(dbusScriptingIface+".unloadScript", 0, script.Name)
+	if unloadCall.Err == nil {
+		return nil
+	}
+
+	if script.ObjectPath == "" {
+		return unloadCall.Err
+	}
+
+	if script.ServiceOwner == "" {
+		return unloadCall.Err
+	}
+
+	currentOwner, err := kwinServiceOwner(conn)
+	if err != nil {
+		return fmt.Errorf("verify KWin service owner before exact stop: %w", err)
+	}
+
+	if currentOwner != script.ServiceOwner {
+		verbosef(
+			"discarding stale marker for %s: KWin owner changed from %s to %s",
+			script.Name,
+			script.ServiceOwner,
+			currentOwner,
+		)
+
+		return nil
+	}
+
+	scriptObj := conn.Object(dbusDestination, dbus.ObjectPath(script.ObjectPath))
+
+	stopCall := scriptObj.Call(dbusScriptIface+".stop", 0)
+	if stopCall.Err == nil {
+		return nil
+	}
+
+	return fmt.Errorf("unload by name: %w; stop object %s: %w", unloadCall.Err, script.ObjectPath, stopCall.Err)
+}
+
+func kwinServiceOwner(conn *dbus.Conn) (string, error) {
+	const (
+		dbusService   = "org.freedesktop.DBus"
+		dbusObject    = "/org/freedesktop/DBus"
+		dbusInterface = "org.freedesktop.DBus"
+	)
+
+	obj := conn.Object(dbusService, dbus.ObjectPath(dbusObject))
+
+	var owner string
+	if err := obj.Call(dbusInterface+".GetNameOwner", 0, dbusDestination).Store(&owner); err != nil {
+		return "", fmt.Errorf("get owner of %s: %w", dbusDestination, err)
+	}
+
+	return owner, nil
 }
 
 func marshalTemplateYAML(template Template) ([]byte, error) {
@@ -6341,14 +6624,54 @@ capture();
 }
 
 func loadScript(conn *dbus.Conn, jsPath, scriptName string) (string, error) {
+	serviceOwner, err := kwinServiceOwner(conn)
+	if err != nil {
+		return "", fmt.Errorf("prepare script tracking owner: %w", err)
+	}
+
+	pending := trackedScript{Name: scriptName, ObjectPath: "", ServiceOwner: serviceOwner, MarkerPath: ""}
+	if err := writeScriptMarker(pending); err != nil {
+		return "", fmt.Errorf("prepare script tracking marker: %w", err)
+	}
+
 	obj := conn.Object(dbusDestination, dbus.ObjectPath(dbusScriptingPath))
 
 	call := obj.Call(dbusScriptingIface+".loadScript", 0, jsPath, scriptName)
 	if call.Err != nil {
+		if err := removeScriptMarker(pending); err != nil {
+			return "", fmt.Errorf("load script: %w; remove pending marker: %w", call.Err, err)
+		}
+
 		return "", call.Err
 	}
 
-	return normalizeScriptPath(call.Body)
+	scriptPath, pathErr := normalizeScriptPath(call.Body)
+
+	serviceOwner, err = kwinServiceOwner(conn)
+	if err != nil {
+		pending.ObjectPath = scriptPath
+
+		return "", rollbackLoadedScript(conn, pending, fmt.Errorf("track loaded script owner: %w", err))
+	}
+
+	script := trackedScript{Name: scriptName, ObjectPath: scriptPath, ServiceOwner: serviceOwner, MarkerPath: ""}
+	if err := writeScriptMarker(script); err != nil {
+		return "", rollbackLoadedScript(conn, script, fmt.Errorf("track loaded script object: %w", err))
+	}
+
+	return scriptPath, pathErr
+}
+
+func rollbackLoadedScript(conn *dbus.Conn, script trackedScript, cause error) error {
+	if err := unloadTrackedScript(conn, script); err != nil {
+		return fmt.Errorf("%w; rollback unload failed: %w", cause, err)
+	}
+
+	if err := removeScriptMarker(script); err != nil {
+		return fmt.Errorf("%w; rollback marker removal failed: %w", cause, err)
+	}
+
+	return cause
 }
 
 func normalizeScriptPath(body []any) (string, error) {
@@ -6416,11 +6739,15 @@ func runScript(conn *dbus.Conn, scriptName, scriptPath string) error {
 }
 
 func unloadScript(conn *dbus.Conn, scriptName string) {
-	obj := conn.Object(dbusDestination, dbus.ObjectPath(dbusScriptingPath))
+	script := readScriptMarker(scriptName)
+	if err := unloadTrackedScript(conn, script); err != nil {
+		log.Printf("warning: unloadScript failed (marker retained for cleanup): %v", err)
 
-	call := obj.Call(dbusScriptingIface+".unloadScript", 0, scriptName)
-	if call.Err != nil {
-		log.Printf("warning: unloadScript failed (may have self-unloaded): %v", call.Err)
+		return
+	}
+
+	if err := removeScriptMarker(script); err != nil {
+		log.Printf("warning: failed to remove script tracking marker: %v", err)
 	}
 }
 
