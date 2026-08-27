@@ -18,6 +18,17 @@ check: lint test race
 test:
     go test ./...
 
+# Run tests and display coverage
+coverage:
+    #!/usr/bin/env sh
+    set -e
+    coverage_file=$(mktemp)
+    trap 'rm -f "$coverage_file"' EXIT
+    go test -coverprofile="$coverage_file" ./...
+    go tool cover -func="$coverage_file"
+
+alias cov := coverage
+
 # Run tests with the Go race detector
 race:
     go test -race ./...
