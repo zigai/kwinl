@@ -1483,23 +1483,176 @@ func TestHumanTablesHaveHeadersAndEmptyStates(t *testing.T) {
 	payload := `{"windows":[{"id":"1","app":"org.example.App","caption":"A title","geometry":"10,20,300,200","monitor":"DP-1","desktop":"Work"}]}`
 
 	output := captureStdout(t, func() {
-		if err := printWindowSearchPayload(payload, false); err != nil {
+		if err := printWindowSearchPayload(payload, false, false); err != nil {
 			t.Fatalf("print window payload: %v", err)
 		}
 	})
 
-	if !strings.HasPrefix(output, "ID  APP") || !strings.Contains(output, "A title") {
+	if !strings.HasPrefix(output, "ID  App") || !strings.Contains(output, "A title") {
 		t.Fatalf("unexpected table output:\n%s", output)
 	}
 
 	emptyOutput := captureStdout(t, func() {
-		if err := printWindowSearchPayload(`{"windows":[]}`, false); err != nil {
+		if err := printWindowSearchPayload(`{"windows":[]}`, false, false); err != nil {
 			t.Fatalf("print empty window payload: %v", err)
 		}
 	})
 
 	if emptyOutput != "No windows found.\n" {
 		t.Fatalf("unexpected empty state: %q", emptyOutput)
+	}
+}
+
+func TestRenderTableCompactTruncation(t *testing.T) {
+	t.Parallel()
+
+	columns := []tableColumn{
+		{heading: "ID", fixed: true, wrap: wrapIdentifier},
+		{heading: "App", fixed: false, minWidth: 16, wrap: wrapIdentifier},
+		{heading: "Title", fixed: false, minWidth: 20, wrap: wrapText},
+		{heading: "Geometry", fixed: true, wrap: wrapIdentifier},
+		{heading: "Monitor", fixed: false, minWidth: 10, wrap: wrapIdentifier},
+		{heading: "Desktop", fixed: true, wrap: wrapIdentifier},
+		{heading: "States", fixed: true, wrap: wrapIdentifier},
+	}
+
+	rows := [][]string{
+		{"101", "org.kde.extremely.long.application.name.for.testing", "Very Long Window Title That Definitely Exceeds Width", "1920,1080,800,600", "DP-1-super-long-monitor-name", "Desktop 1", "minimized,keep-above"},
+	}
+
+	// Render in 80 width terminal (compact)
+	compactOut := renderTable(tableRenderOptions{
+		columns: columns,
+		rows:    rows,
+		full:    false,
+		width:   80,
+	})
+
+	lines := strings.Split(strings.TrimSpace(compactOut), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("compact table must be single row (header + 1 row), got %d lines:\n%s", len(lines), compactOut)
+	}
+
+	// Fixed columns must not be truncated
+	if !strings.Contains(lines[1], "101") || !strings.Contains(lines[1], "1920,1080,800,600") || !strings.Contains(lines[1], "Desktop 1") {
+		t.Fatalf("fixed column truncated in compact mode: %s", lines[1])
+	}
+
+	// Flexible columns should have ellipsis when truncated
+	if !strings.Contains(lines[1], "…") {
+		t.Fatalf("expected ellipsis in constrained compact table: %s", lines[1])
+	}
+}
+
+func TestRenderTableFullWrapped(t *testing.T) {
+	t.Parallel()
+
+	columns := []tableColumn{
+		{heading: "ID", fixed: true, wrap: wrapIdentifier},
+		{heading: "App", fixed: false, minWidth: 16, wrap: wrapIdentifier},
+		{heading: "Title", fixed: false, minWidth: 20, wrap: wrapText},
+		{heading: "Geometry", fixed: true, wrap: wrapIdentifier},
+		{heading: "Monitor", fixed: false, minWidth: 10, wrap: wrapIdentifier},
+		{heading: "Desktop", fixed: true, wrap: wrapIdentifier},
+		{heading: "States", fixed: true, wrap: wrapIdentifier},
+	}
+
+	rows := [][]string{
+		{"101", "org.kde.app", "A Somewhat Long Window Title", "1920,1080,800,600", "DP-1", "Desktop 1", "minimized"},
+	}
+
+	// In 160 width, full wrapped table fits
+	fullOut := renderTable(tableRenderOptions{
+		columns: columns,
+		rows:    rows,
+		full:    true,
+		width:   160,
+	})
+
+	if strings.Contains(fullOut, "…") {
+		t.Fatalf("full table must not truncate with ellipsis: %s", fullOut)
+	}
+
+	if !strings.Contains(fullOut, "A Somewhat Long Window Title") || !strings.Contains(fullOut, "org.kde.app") {
+		t.Fatalf("full table output missing expected contents:\n%s", fullOut)
+	}
+}
+
+func TestRenderTableFullStackedFallback(t *testing.T) {
+	t.Parallel()
+
+	columns := []tableColumn{
+		{heading: "ID", fixed: true, wrap: wrapIdentifier},
+		{heading: "App", fixed: false, minWidth: 16, wrap: wrapIdentifier},
+		{heading: "Title", fixed: false, minWidth: 20, wrap: wrapText},
+		{heading: "Geometry", fixed: true, wrap: wrapIdentifier},
+		{heading: "Monitor", fixed: false, minWidth: 10, wrap: wrapIdentifier},
+		{heading: "Desktop", fixed: true, wrap: wrapIdentifier},
+		{heading: "States", fixed: true, wrap: wrapIdentifier},
+	}
+
+	rows := [][]string{
+		{"101", "org.kde.extremely.long.application.name", "A Very Long Window Title That Cannot Fit In Narrow Table", "1920,1080,800,600", "DP-1", "Desktop 1", "minimized,keep-above"},
+	}
+
+	// In 60 width terminal, full mode must fall back to stacked records
+	stackedOut := renderTable(tableRenderOptions{
+		columns: columns,
+		rows:    rows,
+		full:    true,
+		width:   60,
+	})
+
+	if strings.Contains(stackedOut, "…") {
+		t.Fatalf("stacked records must not truncate with ellipsis: %s", stackedOut)
+	}
+
+	for _, label := range []string{"ID:", "App:", "Title:", "Geometry:", "Monitor:", "Desktop:", "States:"} {
+		if !strings.Contains(stackedOut, label) {
+			t.Fatalf("stacked record missing label %q:\n%s", label, stackedOut)
+		}
+	}
+
+	if !strings.Contains(stackedOut, "org.kde.extremely.long.application.name") {
+		t.Fatalf("stacked record lost data:\n%s", stackedOut)
+	}
+}
+
+func TestRenderTableDesktopsAndLayouts(t *testing.T) {
+	// Desktop list payload
+	desktopPayload := `{"desktops":[{"index":1,"id":"desk-1","name":"Main Workspace","current":true},{"index":2,"id":"desk-2","name":"Secondary Space","current":false}]}`
+
+	out := captureStdout(t, func() {
+		if err := printDesktopListPayload(desktopPayload, false, false); err != nil {
+			t.Fatalf("print desktop list: %v", err)
+		}
+	})
+	if !strings.Contains(out, "Index") || !strings.Contains(out, "Main Workspace") || !strings.Contains(out, "current") {
+		t.Fatalf("unexpected desktop list output:\n%s", out)
+	}
+
+	// Desktop current payload
+	currentPayload := `{"current":{"index":1,"id":"desk-1","name":"Main Workspace"}}`
+
+	out = captureStdout(t, func() {
+		if err := printDesktopCurrentPayload(currentPayload, false, false); err != nil {
+			t.Fatalf("print desktop current: %v", err)
+		}
+	})
+	if !strings.Contains(out, "Index") || !strings.Contains(out, "Main Workspace") {
+		t.Fatalf("unexpected desktop current output:\n%s", out)
+	}
+
+	// Mouse location payload
+	mousePayload := `{"x":500,"y":300,"monitor":"DP-1"}`
+
+	out = captureStdout(t, func() {
+		if err := printMouseLocationPayload(mousePayload, false, false); err != nil {
+			t.Fatalf("print mouse location: %v", err)
+		}
+	})
+	if !strings.Contains(out, "Monitor") || !strings.Contains(out, "500") || !strings.Contains(out, "DP-1") {
+		t.Fatalf("unexpected mouse location output:\n%s", out)
 	}
 }
 

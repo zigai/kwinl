@@ -152,8 +152,11 @@ Available actions:
   toggle-keep-above, toggle-keep-below, clear-stacking, close
 
 Search output columns:
-  ID, APP, TITLE, GEOMETRY, MONITOR, DESKTOP, STATES
+  ID, App, Title, Geometry, Monitor, Desktop, States
 
+Flags:
+  --full    show complete values using an adaptive layout (wrapped table or stacked records)
+  --json    write search results as JSON
 Action behavior:
   - Actions target the topmost matching window by default.
   - Use --all to apply an action to every matching window.

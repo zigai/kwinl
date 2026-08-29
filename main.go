@@ -22,11 +22,14 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 
 	"github.com/godbus/dbus/v5"
+	prettytable "github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )
 
@@ -463,15 +466,18 @@ var (
 	windowLimitFlag   int
 	windowAllFlag     bool
 	windowJSONFlag    bool
+	windowFullFlag    bool
 	windowAnyFlag     bool
 	windowPosFlag     string
 	windowSizeFlag    string
 	windowGeomFlag    string
 
 	desktopJSONFlag    bool
+	desktopFullFlag    bool
 	desktopTimeoutFlag string
 
 	mouseJSONFlag         bool
+	mouseFullFlag         bool
 	mouseAllFlag          bool
 	mouseTimeoutFlag      string
 	mouseButtonFlag       string
@@ -480,6 +486,8 @@ var (
 	mouseBackendFlag      string
 	mouseScrollAmountFlag int
 
+	layoutsJSONFlag         bool
+	layoutsFullFlag         bool
 	captureTimeoutFlag      string
 	captureInferCommandFlag bool
 	captureIncludeUnknown   bool
@@ -510,6 +518,7 @@ type windowSearchConfig struct {
 	Selector   windowSelector
 	Timeout    time.Duration
 	JSONOutput bool
+	FullOutput bool
 	ScriptName string
 	TempDir    string
 	JSFile     string
@@ -933,6 +942,7 @@ func addWindowSelectorFlags(cmd *cobra.Command) {
 func addWindowSearchFlags(cmd *cobra.Command) {
 	addWindowSelectorFlags(cmd)
 	cmd.Flags().BoolVar(&windowJSONFlag, "json", false, "write search results as JSON")
+	cmd.Flags().BoolVar(&windowFullFlag, "full", false, "show complete values using an adaptive layout")
 	cmd.Flags().StringVarP(&windowTimeoutFlag, "timeout", "t", "2s", "timeout duration (e.g., 2s, 500ms)")
 }
 
@@ -957,11 +967,13 @@ func addWindowGeometryFlags(cmd *cobra.Command, mode windowGeometryMode) {
 
 func addDesktopQueryFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&desktopJSONFlag, "json", false, "write result as JSON")
+	cmd.Flags().BoolVar(&desktopFullFlag, "full", false, "show complete values using an adaptive layout")
 	cmd.Flags().StringVarP(&desktopTimeoutFlag, "timeout", "t", "2s", "timeout duration (e.g., 2s, 500ms)")
 }
 
 func addMouseQueryFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&mouseJSONFlag, "json", false, "write result as JSON")
+	cmd.Flags().BoolVar(&mouseFullFlag, "full", false, "show complete values using an adaptive layout")
 	cmd.Flags().StringVarP(&mouseTimeoutFlag, "timeout", "t", "2s", "timeout duration (e.g., 2s, 500ms)")
 }
 
@@ -1028,6 +1040,8 @@ func init() {
 	layoutsCmd.AddCommand(layoutsListCmd)
 	layoutsCmd.AddCommand(layoutsRemoveCmd)
 	layoutsCmd.AddCommand(layoutsLaunchCmd)
+	layoutsListCmd.Flags().BoolVar(&layoutsJSONFlag, "json", false, "write layout list as JSON")
+	layoutsListCmd.Flags().BoolVar(&layoutsFullFlag, "full", false, "show complete values using an adaptive layout")
 
 	windowsCmd.AddCommand(windowsSearchCmd)
 	windowsCmd.AddCommand(newWindowsActionCmd(windowActionActivate, "Activate an existing window"))
@@ -1391,7 +1405,7 @@ func runWindowsSearch(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return printWindowSearchPayload(payload, cfg.JSONOutput)
+	return printWindowSearchPayload(payload, cfg.JSONOutput, cfg.FullOutput)
 }
 
 func runWindowsAction(action string) error {
@@ -1681,6 +1695,7 @@ func parseWindowSearchConfig() (windowSearchConfig, error) {
 		Selector:   selector,
 		Timeout:    timeout,
 		JSONOutput: windowJSONFlag,
+		FullOutput: windowFullFlag,
 		ScriptName: scriptName,
 		TempDir:    tempDir,
 		JSFile:     filepath.Join(tempDir, scriptName+".js"),
@@ -1814,7 +1829,7 @@ func runDesktopsList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return printDesktopListPayload(payload, desktopJSONFlag)
+	return printDesktopListPayload(payload, desktopJSONFlag, desktopFullFlag)
 }
 
 func runDesktopsCurrent(cmd *cobra.Command, args []string) error {
@@ -1823,7 +1838,7 @@ func runDesktopsCurrent(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return printDesktopCurrentPayload(payload, desktopJSONFlag)
+	return printDesktopCurrentPayload(payload, desktopJSONFlag, desktopFullFlag)
 }
 
 func runDesktopsCount(cmd *cobra.Command, args []string) error {
@@ -1885,7 +1900,7 @@ func runDesktopsSet(cmd *cobra.Command, args []string) error {
 	return printActionSuccess(result, "switched desktop")
 }
 
-func printDesktopListPayload(payload string, jsonOutput bool) error {
+func printDesktopListPayload(payload string, jsonOutput bool, full bool) error {
 	var parsed desktopPayload
 	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
 		return fmt.Errorf("parse desktop list payload JSON: %w", err)
@@ -1912,10 +1927,20 @@ func printDesktopListPayload(payload string, jsonOutput bool) error {
 		rows = append(rows, []string{strconv.Itoa(desktop.Index), desktop.ID, desktop.Name, state})
 	}
 
-	return writeHumanTable([]string{"INDEX", "ID", "NAME", "STATE"}, rows, "No virtual desktops found.")
+	return writeHumanTable(tableRenderOptions{
+		columns: []tableColumn{
+			{heading: "Index", fixed: true},
+			{heading: "ID", fixed: true, wrap: wrapIdentifier},
+			{heading: "Name", fixed: false, minWidth: 16, wrap: wrapText},
+			{heading: "State", fixed: true},
+		},
+		rows:         rows,
+		emptyMessage: "No virtual desktops found.",
+		full:         full,
+	})
 }
 
-func printDesktopCurrentPayload(payload string, jsonOutput bool) error {
+func printDesktopCurrentPayload(payload string, jsonOutput bool, full bool) error {
 	var parsed desktopPayload
 	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
 		return fmt.Errorf("parse current desktop payload JSON: %w", err)
@@ -1936,11 +1961,16 @@ func printDesktopCurrentPayload(payload string, jsonOutput bool) error {
 		return newExitError(exitCodeLoadFailed, errNoCurrentDesktop)
 	}
 
-	return writeHumanTable(
-		[]string{"INDEX", "ID", "NAME"},
-		[][]string{{strconv.Itoa(parsed.Current.Index), parsed.Current.ID, parsed.Current.Name}},
-		"",
-	)
+	return writeHumanTable(tableRenderOptions{
+		columns: []tableColumn{
+			{heading: "Index", fixed: true},
+			{heading: "ID", fixed: true, wrap: wrapIdentifier},
+			{heading: "Name", fixed: false, minWidth: 16, wrap: wrapText},
+		},
+		rows:         [][]string{{strconv.Itoa(parsed.Current.Index), parsed.Current.ID, parsed.Current.Name}},
+		emptyMessage: "",
+		full:         full,
+	})
 }
 
 func runMouseLocation(cmd *cobra.Command, args []string) error {
@@ -1956,7 +1986,7 @@ func runMouseLocation(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return printMouseLocationPayload(payload, mouseJSONFlag)
+	return printMouseLocationPayload(payload, mouseJSONFlag, mouseFullFlag)
 }
 
 func runMouseHoveredWindow(cmd *cobra.Command, args []string) error {
@@ -1972,10 +2002,10 @@ func runMouseHoveredWindow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return printHoveredWindowPayload(payload, mouseJSONFlag)
+	return printHoveredWindowPayload(payload, mouseJSONFlag, mouseFullFlag)
 }
 
-func printMouseLocationPayload(payload string, jsonOutput bool) error {
+func printMouseLocationPayload(payload string, jsonOutput bool, full bool) error {
 	var parsed mouseLocationPayload
 	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
 		return fmt.Errorf("parse mouse location payload JSON: %w", err)
@@ -1992,14 +2022,19 @@ func printMouseLocationPayload(payload string, jsonOutput bool) error {
 		return nil
 	}
 
-	return writeHumanTable(
-		[]string{"X", "Y", "MONITOR"},
-		[][]string{{strconv.Itoa(parsed.X), strconv.Itoa(parsed.Y), parsed.Monitor}},
-		"",
-	)
+	return writeHumanTable(tableRenderOptions{
+		columns: []tableColumn{
+			{heading: "X", fixed: true},
+			{heading: "Y", fixed: true},
+			{heading: "Monitor", fixed: false, minWidth: 10, wrap: wrapIdentifier},
+		},
+		rows:         [][]string{{strconv.Itoa(parsed.X), strconv.Itoa(parsed.Y), parsed.Monitor}},
+		emptyMessage: "",
+		full:         full,
+	})
 }
 
-func printHoveredWindowPayload(payload string, jsonOutput bool) error {
+func printHoveredWindowPayload(payload string, jsonOutput bool, full bool) error {
 	var parsed windowSearchPayload
 	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
 		return fmt.Errorf("parse hovered window payload JSON: %w", err)
@@ -2009,7 +2044,7 @@ func printHoveredWindowPayload(payload string, jsonOutput bool) error {
 		return newExitError(exitCodeNoMatch, errNoMatchingWindow)
 	}
 
-	return printWindowSearchPayload(payload, jsonOutput)
+	return printWindowSearchPayload(payload, jsonOutput, full)
 }
 
 type externalCommand struct {
@@ -2438,7 +2473,7 @@ func writeWindowActionJSFile(cfg windowActionConfig, callbackService string) err
 	return nil
 }
 
-func printWindowSearchPayload(payload string, jsonOutput bool) error {
+func printWindowSearchPayload(payload string, jsonOutput bool, full bool) error {
 	var parsed windowSearchPayload
 	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
 		return fmt.Errorf("parse window search payload JSON: %w", err)
@@ -2468,54 +2503,461 @@ func printWindowSearchPayload(payload string, jsonOutput bool) error {
 		})
 	}
 
-	return writeHumanTable(
-		[]string{"ID", "APP", "TITLE", "GEOMETRY", "MONITOR", "DESKTOP", "STATES"},
-		rows,
-		"No windows found.",
-	)
+	return writeHumanTable(tableRenderOptions{
+		columns: []tableColumn{
+			{heading: "ID", fixed: true, wrap: wrapIdentifier},
+			{heading: "App", fixed: false, minWidth: 16, wrap: wrapIdentifier},
+			{heading: "Title", fixed: false, minWidth: 20, wrap: wrapText},
+			{heading: "Geometry", fixed: true, wrap: wrapIdentifier},
+			{heading: "Monitor", fixed: false, minWidth: 10, wrap: wrapIdentifier},
+			{heading: "Desktop", fixed: true, wrap: wrapIdentifier},
+			{heading: "States", fixed: true, wrap: wrapIdentifier},
+		},
+		rows:         rows,
+		emptyMessage: "No windows found.",
+		full:         full,
+	})
 }
 
-func writeHumanTable(headers []string, rows [][]string, emptyMessage string) error {
-	if len(rows) == 0 {
-		if emptyMessage == "" {
-			return nil
-		}
+type humanWrapFunc func(string, int) []string
 
-		_, err := fmt.Fprintln(os.Stdout, emptyMessage)
-		if err != nil {
-			return fmt.Errorf("write empty table state: %w", err)
-		}
+type tableColumn struct {
+	heading  string
+	fixed    bool
+	minWidth int
+	wrap     humanWrapFunc
+}
 
-		return nil
+type tableRenderOptions struct {
+	columns      []tableColumn
+	rows         [][]string
+	emptyMessage string
+	full         bool
+	width        int
+}
+
+func terminalWidth(f *os.File) int {
+	if f != nil {
+		if w, _, err := term.GetSize(int(f.Fd())); err == nil && w > 0 {
+			return w
+		}
 	}
 
-	writer := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(writer, strings.Join(headers, "\t")); err != nil {
-		return fmt.Errorf("write table header: %w", err)
+	if cols := os.Getenv("COLUMNS"); cols != "" {
+		if w, err := strconv.Atoi(cols); err == nil && w > 0 {
+			return w
+		}
+	}
+
+	return 120
+}
+
+func newTableWriter() prettytable.Writer {
+	writer := prettytable.NewWriter()
+	style := prettytable.StyleDefault
+	style.Box.PaddingLeft = ""
+	style.Box.PaddingRight = "  "
+	style.Format.Header = text.FormatDefault
+	style.Options = prettytable.OptionsNoBordersAndSeparators
+	writer.SetStyle(style)
+
+	return writer
+}
+
+func renderTable(opts tableRenderOptions) string {
+	if len(opts.rows) == 0 {
+		if opts.emptyMessage == "" {
+			return ""
+		}
+
+		return opts.emptyMessage + "\n"
+	}
+
+	maxWidth := opts.width
+	if maxWidth <= 0 {
+		maxWidth = terminalWidth(os.Stdout)
+	}
+
+	if opts.full {
+		cols, fits := allocateFullTableColumns(opts.columns, opts.rows, maxWidth)
+		if !fits {
+			return renderStackedRecords(opts.columns, opts.rows, maxWidth)
+		}
+
+		return renderWrappedTable(cols, opts.rows)
+	}
+
+	cols := allocateCompactTableColumns(opts.columns, opts.rows, maxWidth)
+
+	return renderCompactTable(cols, opts.rows)
+}
+
+type sizedColumn struct {
+	heading string
+	width   int
+	wrap    humanWrapFunc
+}
+
+func measureNaturalWidths(columns []tableColumn, rows [][]string) []int {
+	maxLen := make([]int, len(columns))
+	for i, col := range columns {
+		maxLen[i] = utf8.RuneCountInString(col.heading)
 	}
 
 	for _, row := range rows {
-		cells := make([]string, len(row))
-		for index, cell := range row {
-			cells[index] = sanitizeTableCell(cell)
-		}
-
-		if _, err := fmt.Fprintln(writer, strings.Join(cells, "\t")); err != nil {
-			return fmt.Errorf("write table row: %w", err)
+		for i, cell := range row {
+			if i < len(maxLen) {
+				maxLen[i] = max(maxLen[i], utf8.RuneCountInString(sanitizeTableCell(cell)))
+			}
 		}
 	}
 
-	if err := writer.Flush(); err != nil {
-		return fmt.Errorf("flush table output: %w", err)
+	return maxLen
+}
+
+func allocateCompactTableColumns(columns []tableColumn, rows [][]string, maxWidth int) []sizedColumn {
+	if maxWidth <= 0 {
+		maxWidth = 120
+	}
+
+	maxLen := measureNaturalWidths(columns, rows)
+	fixedTotal := max(0, len(columns)-1) * 2
+	totalFlexNeeded := 0
+
+	for i, col := range columns {
+		if col.fixed {
+			fixedTotal += maxLen[i]
+		} else {
+			totalFlexNeeded += maxLen[i]
+		}
+	}
+
+	available := maxWidth - fixedTotal
+	out := make([]sizedColumn, len(columns))
+
+	for i, col := range columns {
+		if col.fixed {
+			out[i] = sizedColumn{heading: col.heading, width: maxLen[i], wrap: col.wrap}
+			continue
+		}
+
+		headLen := utf8.RuneCountInString(col.heading)
+		width := headLen
+
+		if available >= totalFlexNeeded {
+			width = maxLen[i]
+		} else if available > 0 && totalFlexNeeded > 0 {
+			width = min(max(headLen, (available*maxLen[i])/totalFlexNeeded), maxLen[i])
+		}
+
+		out[i] = sizedColumn{heading: col.heading, width: width, wrap: col.wrap}
+	}
+
+	return out
+}
+
+func allocateFullTableColumns(columns []tableColumn, rows [][]string, maxWidth int) ([]sizedColumn, bool) {
+	if maxWidth <= 0 {
+		maxWidth = 120
+	}
+
+	maxLen := measureNaturalWidths(columns, rows)
+	fixedTotal := max(0, len(columns)-1) * 2
+	minFlexTotal := 0
+	minWidths := make([]int, len(columns))
+
+	for i, col := range columns {
+		headLen := utf8.RuneCountInString(col.heading)
+		if col.fixed {
+			fixedTotal += maxLen[i]
+			minWidths[i] = maxLen[i]
+		} else {
+			minW := max(headLen, min(maxLen[i], col.minWidth))
+			minWidths[i] = minW
+			minFlexTotal += minW
+		}
+	}
+
+	fits := maxWidth >= (fixedTotal + minFlexTotal)
+	out := make([]sizedColumn, len(columns))
+
+	if !fits {
+		for i, col := range columns {
+			out[i] = sizedColumn{heading: col.heading, width: minWidths[i], wrap: col.wrap}
+		}
+
+		return out, false
+	}
+
+	extra := maxWidth - fixedTotal - minFlexTotal
+	totalUnmet := 0
+
+	for i, col := range columns {
+		if !col.fixed {
+			totalUnmet += maxLen[i] - minWidths[i]
+		}
+	}
+
+	for i, col := range columns {
+		if col.fixed {
+			out[i] = sizedColumn{heading: col.heading, width: maxLen[i], wrap: col.wrap}
+			continue
+		}
+
+		unmet := maxLen[i] - minWidths[i]
+
+		add := 0
+		if extra > 0 && totalUnmet > 0 {
+			add = min(unmet, (extra*unmet)/totalUnmet)
+		}
+
+		out[i] = sizedColumn{heading: col.heading, width: minWidths[i] + add, wrap: col.wrap}
+	}
+
+	return out, true
+}
+
+func renderCompactTable(columns []sizedColumn, rows [][]string) string {
+	writer := newTableWriter()
+	header := make(prettytable.Row, len(columns))
+	configs := make([]prettytable.ColumnConfig, len(columns))
+
+	for i, col := range columns {
+		header[i] = col.heading
+		configs[i] = prettytable.ColumnConfig{
+			Number:   i + 1,
+			WidthMax: col.width,
+		}
+	}
+
+	writer.SetColumnConfigs(configs)
+	writer.AppendHeader(header)
+
+	for _, row := range rows {
+		tableRow := make(prettytable.Row, len(columns))
+		for i := range columns {
+			cell := ""
+			if i < len(row) {
+				cell = row[i]
+			}
+
+			tableRow[i] = truncateText(cell, columns[i].width)
+		}
+
+		writer.AppendRow(tableRow)
+	}
+
+	writer.SuppressTrailingSpaces()
+
+	rendered := writer.Render()
+	if rendered == "" {
+		return ""
+	}
+
+	lines := strings.Split(rendered, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " ")
+	}
+
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func renderWrappedTable(columns []sizedColumn, rows [][]string) string {
+	writer := newTableWriter()
+	header := make(prettytable.Row, len(columns))
+	configs := make([]prettytable.ColumnConfig, len(columns))
+
+	for i, col := range columns {
+		header[i] = col.heading
+
+		wrapCell := col.wrap
+		if wrapCell == nil {
+			wrapCell = wrapText
+		}
+
+		configs[i] = prettytable.ColumnConfig{
+			Number:   i + 1,
+			WidthMax: col.width,
+			WidthMaxEnforcer: func(value string, maxLen int) string {
+				return strings.Join(wrapCell(value, maxLen), "\n")
+			},
+		}
+	}
+
+	writer.SetColumnConfigs(configs)
+	writer.AppendHeader(header)
+
+	for _, row := range rows {
+		tableRow := make(prettytable.Row, len(columns))
+		for i := range columns {
+			cell := ""
+			if i < len(row) {
+				cell = row[i]
+			}
+
+			tableRow[i] = sanitizeTableCell(cell)
+		}
+
+		writer.AppendRow(tableRow)
+	}
+
+	writer.SuppressTrailingSpaces()
+
+	rendered := writer.Render()
+	if rendered == "" {
+		return ""
+	}
+
+	lines := strings.Split(rendered, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " ")
+	}
+
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func renderStackedRecords(columns []tableColumn, rows [][]string, maxWidth int) string {
+	if maxWidth <= 0 {
+		maxWidth = 120
+	}
+
+	labelWidth := maxLabelWidth(columns)
+	labelWidth = min(labelWidth, 24, max(1, maxWidth-4))
+	valueWidth := max(1, maxWidth-labelWidth-2)
+
+	var out strings.Builder
+
+	for rowIndex, row := range rows {
+		if rowIndex > 0 {
+			out.WriteByte('\n')
+		}
+
+		writeStackedRecord(&out, columns, row, labelWidth, valueWidth)
+	}
+
+	return out.String()
+}
+
+func maxLabelWidth(columns []tableColumn) int {
+	labelWidth := 0
+	for _, col := range columns {
+		labelWidth = max(labelWidth, utf8.RuneCountInString(col.heading)+1)
+	}
+
+	return labelWidth
+}
+
+func writeStackedRecord(out *strings.Builder, columns []tableColumn, row []string, labelWidth, valueWidth int) {
+	for colIndex, col := range columns {
+		cell := ""
+		if colIndex < len(row) {
+			cell = row[colIndex]
+		}
+
+		label := truncateText(col.heading+":", labelWidth)
+
+		wrapCell := col.wrap
+		if wrapCell == nil {
+			wrapCell = wrapText
+		}
+
+		lines := wrapCell(cell, valueWidth)
+		for lineIndex, line := range lines {
+			if lineIndex == 0 {
+				fmt.Fprintf(out, "%-*s  %s\n", labelWidth, label, line)
+			} else {
+				fmt.Fprintf(out, "%*s  %s\n", labelWidth, "", line)
+			}
+		}
+	}
+}
+
+func writeHumanTable(opts tableRenderOptions) error {
+	rendered := renderTable(opts)
+	if rendered == "" {
+		return nil
+	}
+
+	if _, err := fmt.Fprint(os.Stdout, rendered); err != nil {
+		return fmt.Errorf("write table output: %w", err)
 	}
 
 	return nil
 }
 
 func sanitizeTableCell(value string) string {
-	replacer := strings.NewReplacer("\t", " ", "\r", " ", "\n", " ")
+	return strings.Join(strings.Fields(value), " ")
+}
 
-	return replacer.Replace(value)
+func truncateText(value string, width int) string {
+	value = sanitizeTableCell(value)
+	if utf8.RuneCountInString(value) <= width {
+		return value
+	}
+
+	if width <= 1 {
+		return "…"
+	}
+
+	runes := []rune(value)
+
+	return string(runes[:width-1]) + "…"
+}
+
+func wrapText(value string, width int) []string {
+	return wrapDelimitedText(value, width, "")
+}
+
+func wrapIdentifier(value string, width int) []string {
+	return wrapDelimitedText(value, width, "-_./")
+}
+
+func wrapDelimitedText(value string, width int, delimiters string) []string {
+	value = sanitizeTableCell(value)
+	if value == "" {
+		return []string{"-"}
+	}
+
+	if width <= 0 {
+		return []string{value}
+	}
+
+	var lines []string
+
+	for utf8.RuneCountInString(value) > width {
+		runes := []rune(value)
+
+		cut := width
+		for index := width; index > 0; index-- {
+			switch {
+			case runes[index-1] == ' ':
+				cut = index - 1
+			case strings.ContainsRune(delimiters, runes[index-1]):
+				cut = index
+			default:
+				continue
+			}
+
+			break
+		}
+
+		if cut == 0 {
+			cut = width
+		}
+
+		lines = append(lines, strings.TrimSpace(string(runes[:cut])))
+		value = strings.TrimSpace(string(runes[cut:]))
+	}
+
+	if value != "" {
+		lines = append(lines, value)
+	}
+
+	if len(lines) == 0 {
+		return []string{"-"}
+	}
+
+	return lines
 }
 
 func windowStateString(w windowInfo) string {
@@ -2686,7 +3128,25 @@ func runLayoutsList(cmd *cobra.Command, args []string) error {
 		rows = append(rows, []string{item})
 	}
 
-	return writeHumanTable([]string{"LAYOUT"}, rows, "No saved layouts found.")
+	if layoutsJSONFlag {
+		data, err := json.MarshalIndent(map[string][]string{"layouts": items}, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal layouts list JSON: %w", err)
+		}
+
+		fmt.Println(string(data))
+
+		return nil
+	}
+
+	return writeHumanTable(tableRenderOptions{
+		columns: []tableColumn{
+			{heading: "Layout", fixed: false, minWidth: 16, wrap: wrapIdentifier},
+		},
+		rows:         rows,
+		emptyMessage: "No saved layouts found.",
+		full:         layoutsFullFlag,
+	})
 }
 
 func runLayoutsRemove(cmd *cobra.Command, args []string) error {
@@ -4042,12 +4502,12 @@ func isSupportedLayoutExt(ext string) bool {
 }
 
 func getLayoutsDir() (string, error) {
-	home, err := os.UserHomeDir()
+	configDir, err := os.UserConfigDir()
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve user home directory: %w", err)
+		return "", fmt.Errorf("failed to resolve user config directory: %w", err)
 	}
 
-	return filepath.Join(home, ".config", "kwinl"), nil
+	return filepath.Join(configDir, "kwinl"), nil
 }
 
 func ensureLayoutsDir() (string, error) {

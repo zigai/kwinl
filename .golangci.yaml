@@ -214,6 +214,14 @@ linters:
 
       - source: "cobra\\."
         linters: [exhaustruct]
+      - text: "main\\.tableColumn"
+        linters: [exhaustruct]
+      - text: "main\\.tableRenderOptions"
+        linters: [exhaustruct]
+      - text: "table\\.ColumnConfig"
+        linters: [exhaustruct]
+      - text: "prettytable\\.ColumnConfig"
+        linters: [exhaustruct]
       - source: "TODO"
         linters: [godot]
 
