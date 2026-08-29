@@ -1,6 +1,6 @@
 module github.com/zigai/kwinl
 
-go 1.25.6
+go 1.27
 
 require (
 	github.com/godbus/dbus/v5 v5.2.2

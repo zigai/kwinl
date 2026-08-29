@@ -1004,8 +1004,7 @@ func TestWaitForPlacementReturnsUsageErrorOnFailedCallback(t *testing.T) {
 		t.Fatal("expected placement error")
 	}
 
-	var ve *ValidationError
-	if !errors.As(err, &ve) {
+	if _, ok := errors.AsType[*ValidationError](err); !ok {
 		t.Fatalf("expected ValidationError, got %T", err)
 	}
 
@@ -1044,8 +1043,7 @@ func TestWaitForLaunchPresetCallbackReturnsErrorOnTimeout(t *testing.T) {
 		t.Fatal("expected timeout error")
 	}
 
-	var presetErr *PresetError
-	if !errors.As(err, &presetErr) {
+	if _, ok := errors.AsType[*PresetError](err); !ok {
 		t.Fatalf("expected PresetError, got %T", err)
 	}
 
@@ -1555,8 +1553,7 @@ func TestCompletionRejectsUnsupportedShell(t *testing.T) {
 		t.Fatal("expected unsupported shell error")
 	}
 
-	var validationErr *ValidationError
-	if !errors.As(err, &validationErr) {
+	if _, ok := errors.AsType[*ValidationError](err); !ok {
 		t.Fatalf("expected ValidationError, got %T", err)
 	}
 }

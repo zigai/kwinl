@@ -1118,8 +1118,7 @@ func shouldLogError(err error) bool {
 }
 
 func exitCodeFor(err error) int {
-	var ee *ExitError
-	if errors.As(err, &ee) {
+	if ee, ok := errors.AsType[*ExitError](err); ok {
 		return ee.Code
 	}
 
@@ -1154,23 +1153,19 @@ func isCobraUsageError(err error) bool {
 }
 
 func isUsageError(err error) bool {
-	var ve *ValidationError
-	if errors.As(err, &ve) {
+	if _, ok := errors.AsType[*ValidationError](err); ok {
 		return true
 	}
 
-	var ge *GeometryError
-	if errors.As(err, &ge) {
+	if _, ok := errors.AsType[*GeometryError](err); ok {
 		return true
 	}
 
-	var te *TemplateError
-	if errors.As(err, &te) {
+	if _, ok := errors.AsType[*TemplateError](err); ok {
 		return true
 	}
 
-	var pe *PresetError
-	if errors.As(err, &pe) {
+	if _, ok := errors.AsType[*PresetError](err); ok {
 		return true
 	}
 
@@ -1223,8 +1218,7 @@ func loadPlaceScriptPath(conn *dbus.Conn, cfg Config) (string, error) {
 		return scriptPath, nil
 	}
 
-	var warning *ScriptPathError
-	if errors.As(err, &warning) {
+	if warning, ok := errors.AsType[*ScriptPathError](err); ok {
 		log.Printf("warning: %v", warning)
 		return scriptPath, nil
 	}
@@ -2403,8 +2397,7 @@ func loadWindowScriptPath(conn *dbus.Conn, jsFile, scriptName string) (string, e
 		return scriptPath, nil
 	}
 
-	var warning *ScriptPathError
-	if errors.As(err, &warning) {
+	if warning, ok := errors.AsType[*ScriptPathError](err); ok {
 		log.Printf("warning: %v", warning)
 		return scriptPath, nil
 	}
@@ -2962,8 +2955,7 @@ func loadLaunchPresetScript(conn *dbus.Conn, preset launchPresetRun) (string, er
 		return scriptPath, nil
 	}
 
-	var warning *ScriptPathError
-	if errors.As(err, &warning) {
+	if warning, ok := errors.AsType[*ScriptPathError](err); ok {
 		log.Printf("warning: preset %s: %v", preset.Label, warning)
 		return scriptPath, nil
 	}
@@ -3305,8 +3297,7 @@ func startCaptureScript(conn *dbus.Conn, tempDir, serviceName string) (string, e
 
 	scriptPath, err := loadScript(conn, jsFile, scriptName)
 	if err != nil {
-		var warning *ScriptPathError
-		if errors.As(err, &warning) {
+		if warning, ok := errors.AsType[*ScriptPathError](err); ok {
 			log.Printf("warning: %v", warning)
 		} else {
 			return "", newExitError(exitCodeLoadFailed, fmt.Errorf("loadScript failed: %w", err))
@@ -7016,8 +7007,7 @@ func shouldCleanupStartedCommands(err error) bool {
 		return false
 	}
 
-	var ee *ExitError
-	if errors.As(err, &ee) {
+	if ee, ok := errors.AsType[*ExitError](err); ok {
 		return ee.Code != exitCodeInterrupted && ee.Code != exitCodeTerminated
 	}
 
