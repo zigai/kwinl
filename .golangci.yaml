@@ -36,7 +36,7 @@ linters:
     - errname
     - errorlint
     - exhaustive
-    - exhaustruct
+    - exhaustruct_v5
     - exptostd
     - fatcontext
     - forcetypeassert
@@ -126,6 +126,17 @@ linters:
     cyclop:
       max-complexity: 12
 
+    decorder:
+      disable-dec-order-check: false
+      dec-order:
+        - const
+        - var
+        - type
+        - func
+
+    funcorder:
+      function: true
+
     gocognit:
       min-complexity: 20
 
@@ -213,24 +224,26 @@ linters:
         linters: [mnd]
 
       - source: "cobra\\."
-        linters: [exhaustruct]
+        linters: [exhaustruct_v5]
       - text: "main\\.tableColumn"
-        linters: [exhaustruct]
+        linters: [exhaustruct_v5]
       - text: "main\\.tableRenderOptions"
-        linters: [exhaustruct]
+        linters: [exhaustruct_v5]
       - text: "table\\.ColumnConfig"
-        linters: [exhaustruct]
+        linters: [exhaustruct_v5]
       - text: "prettytable\\.ColumnConfig"
-        linters: [exhaustruct]
+        linters: [exhaustruct_v5]
       - source: "TODO"
         linters: [godot]
 
       - path: "_test\\.go"
         linters:
           - bodyclose
-          - exhaustruct
+          - exhaustruct_v5
           - errcheck
           - goconst
           - gosec
           - dogsled
           - gocognit
+          - decorder
+          - funcorder
