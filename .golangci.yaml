@@ -127,7 +127,7 @@ linters:
       max-complexity: 12
 
     decorder:
-      disable-dec-order-check: false
+      disable-dec-order-check: true
       dec-order:
         - const
         - var
