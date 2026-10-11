@@ -112,6 +112,8 @@ linters:
     - zerologlint
 
   settings:
+    embeddedstructfieldcheck:
+      forbid-mutex: true
     errcheck:
       check-type-assertions: true
 
@@ -179,6 +181,29 @@ linters:
         - name: error-naming
         - name: if-return
         - name: var-naming
+          arguments: [[], ["GRPC", "IOS"]]
+        - name: context-as-argument
+          arguments:
+            - allow-types-before: "*testing.T,testing.TB,*testing.B,*testing.F"
+        - name: import-shadowing
+        - name: package-naming
+          arguments:
+            - check-extra-bad-name: true
+              user-defined-bad-names: [handlers]
+        - name: package-directory-mismatch
+        - name: filename-format
+          arguments: ["^[a-z0-9][a-z0-9_]*\\.go$"]
+        - name: exported
+          arguments:
+            - disable-checks-on-constants
+            - disable-checks-on-functions
+            - disable-checks-on-methods
+            - disable-checks-on-types
+            - disable-checks-on-variables
+        - name: redundant-import-alias
+        - name: import-alias-naming
+        - name: dot-imports
+        - name: blank-imports
         - name: error-strings
         - name: receiver-naming
         - name: indent-error-flow
