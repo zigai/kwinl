@@ -9,12 +9,9 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,40 +21,6 @@ var (
 	errIntrospectionFailed = errors.New("introspection failed")
 	errTestCLIUsage        = errors.New("test CLI usage error")
 )
-
-func captureStderr(t *testing.T, fn func()) string {
-	t.Helper()
-
-	oldStderr := os.Stderr
-
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("create stderr pipe: %v", err)
-	}
-
-	os.Stderr = w
-
-	defer func() {
-		os.Stderr = oldStderr
-	}()
-
-	fn()
-
-	if err := w.Close(); err != nil {
-		t.Fatalf("close stderr writer: %v", err)
-	}
-
-	data, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read stderr: %v", err)
-	}
-
-	if err := r.Close(); err != nil {
-		t.Fatalf("close stderr reader: %v", err)
-	}
-
-	return string(data)
-}
 
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
@@ -445,6 +408,40 @@ func TestValidateTemplateRejectsWhitespaceOnlyAppAndMatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	oldStderr := os.Stderr
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+
+	os.Stderr = w
+
+	defer func() {
+		os.Stderr = oldStderr
+	}()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+
+	if err := r.Close(); err != nil {
+		t.Fatalf("close stderr reader: %v", err)
+	}
+
+	return string(data)
 }
 
 func TestFormatValidationFailureWritesToStderrAndSuppressesRootLogging(t *testing.T) {
@@ -868,55 +865,6 @@ func TestBuildLaunchPresetRunUsesScriptNameAsCallbackToken(t *testing.T) {
 	if run.JSConfig.CallbackToken != run.ScriptName {
 		t.Fatalf("unexpected callback token: got %q want %q", run.JSConfig.CallbackToken, run.ScriptName)
 	}
-}
-
-func TestLaunchCommandReapsFastExitingChild(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("process lifecycle behavior is only exercised on linux in this project")
-	}
-
-	cmd, err := launchCommand([]string{"sh", "-c", "exit 0"})
-	if err != nil {
-		t.Fatalf("launch command: %v", err)
-	}
-
-	if cmd.Stdin != nil || cmd.Stdout != nil || cmd.Stderr != nil {
-		t.Fatalf("expected detached child streams, got stdin=%T stdout=%T stderr=%T", cmd.Stdin, cmd.Stdout, cmd.Stderr)
-	}
-
-	waitForLinuxProcessReaped(t, cmd.Process.Pid, 500*time.Millisecond)
-}
-
-func TestCleanupStartedCommandsTerminatesStartedProcesses(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("process lifecycle behavior is only exercised on linux in this project")
-	}
-
-	cmd, err := launchCommand([]string{"sh", "-c", "sleep 10"})
-	if err != nil {
-		t.Fatalf("launch command: %v", err)
-	}
-
-	cleanupStartedCommands([]*exec.Cmd{cmd})
-
-	waitForLinuxProcessReaped(t, cmd.Process.Pid, 2*time.Second)
-}
-
-func waitForLinuxProcessReaped(t *testing.T, pid int, timeout time.Duration) {
-	t.Helper()
-
-	procPath := "/proc/" + strconv.Itoa(pid)
-
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(procPath); errors.Is(err, os.ErrNotExist) {
-			return
-		}
-
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	t.Fatalf("expected child process to be reaped, process still exists for pid %d", pid)
 }
 
 func TestValidateCleanupDiscoveryReturnsDBusErrorOnDiscoveryFailure(t *testing.T) {

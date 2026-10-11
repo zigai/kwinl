@@ -6,12 +6,55 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 )
+
+func TestLaunchCommandReapsFastExitingChild(t *testing.T) {
+	cmd, err := launchCommand([]string{"sh", "-c", "exit 0"})
+	if err != nil {
+		t.Fatalf("launch command: %v", err)
+	}
+
+	if cmd.Stdin != nil || cmd.Stdout != nil || cmd.Stderr != nil {
+		t.Fatalf("expected detached child streams, got stdin=%T stdout=%T stderr=%T", cmd.Stdin, cmd.Stdout, cmd.Stderr)
+	}
+
+	waitForLinuxProcessReaped(t, cmd.Process.Pid, 500*time.Millisecond)
+}
+
+func TestCleanupStartedCommandsTerminatesStartedProcesses(t *testing.T) {
+	cmd, err := launchCommand([]string{"sh", "-c", "sleep 10"})
+	if err != nil {
+		t.Fatalf("launch command: %v", err)
+	}
+
+	cleanupStartedCommands([]*exec.Cmd{cmd})
+
+	waitForLinuxProcessReaped(t, cmd.Process.Pid, 2*time.Second)
+}
+
+func waitForLinuxProcessReaped(t *testing.T, pid int, timeout time.Duration) {
+	t.Helper()
+
+	procPath := "/proc/" + strconv.Itoa(pid)
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(procPath); errors.Is(err, os.ErrNotExist) {
+			return
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("expected child process to be reaped, process still exists for pid %d", pid)
+}
 
 func TestLaunchTimeoutUnloadsStartedScript(t *testing.T) {
 	server := newLaunchBus(t)
