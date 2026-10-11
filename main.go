@@ -5626,6 +5626,7 @@ function appTargetMatches(id, target) {
   var idNorm = stripPathAndDesktop(idLower);
   var targetNorm = stripPathAndDesktop(targetLower);
   if (idNorm === targetNorm) return true;
+  if (targetNorm.indexOf(".") >= 0) return stripInstanceSuffix(idNorm) === stripInstanceSuffix(targetNorm);
 
   var idTail = stripInstanceSuffix(lastSegment(idNorm));
   var targetTail = stripInstanceSuffix(lastSegment(targetNorm));
@@ -6567,6 +6568,7 @@ function appTargetMatches(id, target) {
   var idNorm = stripPathAndDesktop(idLower);
   var targetNorm = stripPathAndDesktop(targetLower);
   if (idNorm === targetNorm) return true;
+  if (targetNorm.indexOf(".") >= 0) return stripInstanceSuffix(idNorm) === stripInstanceSuffix(targetNorm);
 
   var idTail = stripInstanceSuffix(lastSegment(idNorm));
   var targetTail = stripInstanceSuffix(lastSegment(targetNorm));

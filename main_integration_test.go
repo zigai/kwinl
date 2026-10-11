@@ -202,3 +202,60 @@ function callDBus(){};function print(){}
 		t.Fatalf("closed windows on wrong monitor: %s", got)
 	}
 }
+
+func TestWindowActionPreservesUnrelatedAppNamespaces(t *testing.T) {
+	restore := saveWindowFlags()
+	defer restore()
+
+	windowIDFlag = ""
+	windowAppFlag = "org.alpha.Editor"
+	windowMatchFlag = ""
+	windowClassFlag = ""
+	windowDesktopFlag = ""
+	windowMonitorFlag = ""
+	windowStateFlags = nil
+	windowLimitFlag = 0
+	windowAllFlag = false
+	windowTimeoutFlag = "1s"
+
+	cfg, err := parseWindowActionConfig(windowActionClose)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() {
+		if err := os.RemoveAll(cfg.TempDir); err != nil {
+			t.Error(err)
+		}
+	})
+
+	script := generateWindowActionJS(jsWindowActionConfig{ScriptName: cfg.ScriptName, Selector: cfg.Selector, Action: windowActionClose})
+
+	setup := `var closed=[];
+var workspace={stackingOrder:[
+ {desktopFileName:"org.alpha.Editor",resourceClass:"Editor",closeWindow:function(){closed.push("org.alpha.Editor");}},
+ {desktopFileName:"org.beta.Editor",resourceClass:"Editor",closeWindow:function(){closed.push("org.beta.Editor");}}
+]};
+function callDBus(){};function print(){}
+`
+	if got := runJavaScript(t, setup+script+`console.log(JSON.stringify(closed));`); got != `["org.alpha.Editor"]` {
+		t.Fatalf("closed unrelated application: %s", got)
+	}
+}
+
+func TestPlacePreservesUnrelatedAppNamespaces(t *testing.T) {
+	script := placementScriptForTargets(t, "", "")
+
+	setup := `var added;
+var screen={name:"DP-1",geometry:{x:0,y:0,width:1000,height:1000}};
+var workspace={screens:[screen],activeScreen:screen,desktops:[],stackingOrder:[],windowAdded:{connect:function(fn){added=fn;}}};
+function callDBus(){};function print(){}
+var unrelated={internalId:"1",desktopFileName:"org.other.App",resourceClass:"App",frameGeometry:{x:300,y:300,width:50,height:50}};
+var intended={internalId:"2",desktopFileName:"org.example.App",resourceClass:"App",frameGeometry:{x:300,y:300,width:50,height:50}};
+`
+
+	got := runJavaScript(t, setup+script+`added(unrelated);added(intended);console.log(JSON.stringify([unrelated.frameGeometry,intended.frameGeometry]));`)
+	if got != `[{"x":300,"y":300,"width":50,"height":50},{"x":0,"y":0,"width":100,"height":100}]` {
+		t.Fatalf("placed unrelated application: %s", got)
+	}
+}
