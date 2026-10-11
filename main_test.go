@@ -1269,6 +1269,10 @@ func TestMouseInputCommandBuilders(t *testing.T) {
 	}
 }
 
+func installedMouseToolPath(name string) (string, error) {
+	return "/usr/bin/" + name, nil
+}
+
 func TestResolveMouseClickBackendRequiresHealthyYdotoolDaemon(t *testing.T) {
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
 	t.Setenv("DISPLAY", ":0")
@@ -1284,11 +1288,7 @@ func TestResolveMouseClickBackendRequiresHealthyYdotoolDaemon(t *testing.T) {
 	}
 	defer listener.Close()
 
-	lookPath := func(name string) (string, error) {
-		return "/usr/bin/" + name, nil
-	}
-
-	backend, err := resolveMouseClickBackend(mouseBackendAuto, lookPath)
+	backend, err := resolveMouseClickBackend(mouseBackendAuto, installedMouseToolPath)
 	if err != nil {
 		t.Fatalf("resolve backend: %v", err)
 	}
@@ -1303,11 +1303,7 @@ func TestResolveMouseClickBackendRejectsWaylandXdotoolFallback(t *testing.T) {
 	t.Setenv("DISPLAY", ":0")
 	t.Setenv("YDOTOOL_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
 
-	lookPath := func(name string) (string, error) {
-		return "/usr/bin/" + name, nil
-	}
-
-	_, err := resolveMouseClickBackend(mouseBackendAuto, lookPath)
+	_, err := resolveMouseClickBackend(mouseBackendAuto, installedMouseToolPath)
 	if err == nil {
 		t.Fatal("expected backend resolution error")
 	}
@@ -1327,11 +1323,7 @@ func TestResolveMouseScrollBackendRejectsXdotoolOnWayland(t *testing.T) {
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
 	t.Setenv("DISPLAY", ":0")
 
-	lookPath := func(name string) (string, error) {
-		return "/usr/bin/" + name, nil
-	}
-
-	_, err := resolveMouseScrollBackend(mouseBackendXdotool, lookPath)
+	_, err := resolveMouseScrollBackend(mouseBackendXdotool, installedMouseToolPath)
 	if err == nil || !strings.Contains(err.Error(), "not supported in a Wayland session") {
 		t.Fatalf("expected clear Wayland rejection, got %v", err)
 	}
@@ -1352,11 +1344,7 @@ func TestResolveMouseScrollBackendUsesHealthyYdotoolOnWayland(t *testing.T) {
 	}
 	defer listener.Close()
 
-	lookPath := func(name string) (string, error) {
-		return "/usr/bin/" + name, nil
-	}
-
-	backend, err := resolveMouseScrollBackend(mouseBackendAuto, lookPath)
+	backend, err := resolveMouseScrollBackend(mouseBackendAuto, installedMouseToolPath)
 	if err != nil {
 		t.Fatalf("resolve backend: %v", err)
 	}
@@ -1371,11 +1359,7 @@ func TestResolveMouseScrollBackendFallsBackToXdotoolOnX11(t *testing.T) {
 	t.Setenv("DISPLAY", ":0")
 	t.Setenv("YDOTOOL_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
 
-	lookPath := func(name string) (string, error) {
-		return "/usr/bin/" + name, nil
-	}
-
-	backend, err := resolveMouseScrollBackend(mouseBackendAuto, lookPath)
+	backend, err := resolveMouseScrollBackend(mouseBackendAuto, installedMouseToolPath)
 	if err != nil {
 		t.Fatalf("resolve backend: %v", err)
 	}
