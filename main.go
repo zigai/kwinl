@@ -3314,29 +3314,29 @@ func launchTemplatePresets(
 	for i, preset := range presets {
 		presetRun, err := buildLaunchPresetRun(i, preset, tempDir, callbackService)
 		if err != nil {
-			return nil, nil, err
+			return scriptNames, cmdProcs, err
 		}
 
 		if err := writeLaunchPresetJSFile(presetRun); err != nil {
-			return nil, nil, err
+			return scriptNames, cmdProcs, err
 		}
 
 		scriptPath, err := loadLaunchPresetScript(conn, presetRun)
 		if err != nil {
-			return nil, nil, err
+			return scriptNames, cmdProcs, err
 		}
 
 		scriptNames = append(scriptNames, presetRun.ScriptName)
 
 		cmdProc, err := runLaunchPresetScriptAndCommand(conn, presetRun, scriptPath)
 		if err != nil {
-			return nil, nil, err
+			return scriptNames, cmdProcs, err
 		}
 
 		cmdProcs = append(cmdProcs, cmdProc)
 
 		if err := waitForLaunchPresetCallback(results, presetRun.Label, presetRun.ScriptName, timeout); err != nil {
-			return nil, nil, err
+			return scriptNames, cmdProcs, err
 		}
 	}
 
