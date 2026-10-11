@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1757,6 +1758,29 @@ func TestExpandEnvVarsPreservesDollarTextInReplacement(t *testing.T) {
 
 	if got := expandEnvVars("${PROBE_A}"); got != "$PROBE_B" {
 		t.Fatalf("replacement text changed: got %q want %q", got, "$PROBE_B")
+	}
+}
+
+func TestCaptureYAMLPreservesMultilineDesktopName(t *testing.T) {
+	t.Parallel()
+
+	template, err := buildTemplateFromCapturePayload(`{"presets":[{"app":"org.example.App","desktop":"work\n\"y\": a\n","geometry":{"x":"0","y":"0","width":"100","height":"100"},"command":["true"]}]}`)
+	if err != nil {
+		t.Fatalf("build captured layout: %v", err)
+	}
+
+	data, err := marshalCaptureTemplate(template, "yaml")
+	if err != nil {
+		t.Fatalf("serialize captured layout: %v", err)
+	}
+
+	loaded, err := parseTemplateFromReader("capture", bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("parse captured layout: %v", err)
+	}
+
+	if got := loaded.Presets[0].Desktop; got != "work\n\"y\": a\n" {
+		t.Fatalf("desktop name changed: got %q", got)
 	}
 }
 

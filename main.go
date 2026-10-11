@@ -4321,7 +4321,7 @@ func marshalTemplateYAML(template Template) ([]byte, error) {
 		return nil, fmt.Errorf("failed to marshal YAML: %w", err)
 	}
 
-	return unquoteYAMLKeyY(data), nil
+	return data, nil
 }
 
 func setCommandFlowStyle(node *yaml.Node) {
@@ -4424,13 +4424,6 @@ func setCommandFlowStyleMapping(node *yaml.Node) {
 
 		setCommandFlowStyle(v)
 	}
-}
-
-var yamlQuotedYKeyRE = regexp.MustCompile(`(?m)^(\s*)"y":`)
-
-func unquoteYAMLKeyY(data []byte) []byte {
-	// yaml.v3 quotes "y" due to YAML 1.1 boolean rules; drop quotes for readability.
-	return yamlQuotedYKeyRE.ReplaceAll(data, []byte("${1}y:"))
 }
 
 type capturePayload struct {
