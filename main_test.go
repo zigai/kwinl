@@ -125,85 +125,42 @@ func saveWindowFlags() func() {
 	}
 }
 
-func TestParseTemplateAcceptsNumericGeometryValuesInJSON(t *testing.T) {
+func TestParseTemplateAcceptsGeometryValuesInJSON(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	path := filepath.Join(dir, "layout.json")
-
-	data := `{
-  "version": "1.0.0",
-  "presets": [
-    {
-      "name": "demo",
-      "app": "org.kde.konsole",
-      "command": ["echo", "hi"],
-      "geometry": {
-        "x": 0,
-        "y": 0,
-        "width": 960,
-        "height": 1080
-      }
-    }
-  ]
-}`
-	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
-		t.Fatalf("write layout: %v", err)
+	tests := []struct {
+		name     string
+		geometry string
+		want     PresetGeometry
+	}{
+		{name: "numeric", geometry: `{"x":0,"y":0,"width":960,"height":1080}`, want: PresetGeometry{X: "0", Y: "0", Width: "960", Height: "1080"}},
+		{name: "string", geometry: `{"x":"0","y":"0","width":"50%","height":"1080"}`, want: PresetGeometry{X: "0", Y: "0", Width: "50%", Height: "1080"}},
 	}
 
-	template, err := parseTemplate(path)
-	if err != nil {
-		t.Fatalf("parse template: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	if err := validateTemplate(template); err != nil {
-		t.Fatalf("validate template: %v", err)
-	}
+			path := filepath.Join(t.TempDir(), "layout.json")
 
-	got := template.Presets[0].Geometry
-	if got.X != "0" || got.Y != "0" || got.Width != "960" || got.Height != "1080" {
-		t.Fatalf("unexpected geometry: %+v", got)
-	}
-}
+			data := `{"version":"1.0.0","presets":[{"name":"demo","app":"org.kde.konsole","command":["echo","hi"],"geometry":` + tt.geometry + `}]}`
+			if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+				t.Fatalf("write layout: %v", err)
+			}
 
-func TestParseTemplateAcceptsStringGeometryValuesInJSON(t *testing.T) {
-	t.Parallel()
+			template, err := parseTemplate(path)
+			if err != nil {
+				t.Fatalf("parse template: %v", err)
+			}
 
-	dir := t.TempDir()
-	path := filepath.Join(dir, "layout.json")
+			if err := validateTemplate(template); err != nil {
+				t.Fatalf("validate template: %v", err)
+			}
 
-	data := `{
-  "version": "1.0.0",
-  "presets": [
-    {
-      "name": "demo",
-      "app": "org.kde.konsole",
-      "command": ["echo", "hi"],
-      "geometry": {
-        "x": "0",
-        "y": "0",
-        "width": "50%",
-        "height": "1080"
-      }
-    }
-  ]
-}`
-	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
-		t.Fatalf("write layout: %v", err)
-	}
-
-	template, err := parseTemplate(path)
-	if err != nil {
-		t.Fatalf("parse template: %v", err)
-	}
-
-	if err := validateTemplate(template); err != nil {
-		t.Fatalf("validate template: %v", err)
-	}
-
-	got := template.Presets[0].Geometry
-	if got.X != "0" || got.Y != "0" || got.Width != "50%" || got.Height != "1080" {
-		t.Fatalf("unexpected geometry: %+v", got)
+			if got := template.Presets[0].Geometry; got != tt.want {
+				t.Fatalf("unexpected geometry: got %+v want %+v", got, tt.want)
+			}
+		})
 	}
 }
 
