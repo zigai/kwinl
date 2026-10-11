@@ -1751,6 +1751,15 @@ func TestWindowStateStringFormatsCommonStates(t *testing.T) {
 	}
 }
 
+func TestExpandEnvVarsPreservesDollarTextInReplacement(t *testing.T) {
+	t.Setenv("PROBE_A", "$PROBE_B")
+	t.Setenv("PROBE_B", "expanded")
+
+	if got := expandEnvVars("${PROBE_A}"); got != "$PROBE_B" {
+		t.Fatalf("replacement text changed: got %q want %q", got, "$PROBE_B")
+	}
+}
+
 func TestWindowActionValidatesUnicodeRegexEscapes(t *testing.T) {
 	restore := saveWindowFlags()
 	defer restore()

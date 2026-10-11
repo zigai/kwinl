@@ -7431,22 +7431,12 @@ func filteredEnv(env []string, drop ...string) []string {
 	return out
 }
 
-var (
-	envVarBraceRE = regexp.MustCompile(`\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
-	envVarPlainRE = regexp.MustCompile(`\$([a-zA-Z_][a-zA-Z0-9_]*)`)
-)
+var envVarRE = regexp.MustCompile(`\$\{[a-zA-Z_][a-zA-Z0-9_]*\}|\$[a-zA-Z_][a-zA-Z0-9_]*`)
 
 func expandEnvVars(s string) string {
-	s = envVarBraceRE.ReplaceAllStringFunc(s, func(match string) string {
-		varName := match[2 : len(match)-1]
-		return os.Getenv(varName)
+	return envVarRE.ReplaceAllStringFunc(s, func(match string) string {
+		return os.Getenv(strings.Trim(match, "${}"))
 	})
-	s = envVarPlainRE.ReplaceAllStringFunc(s, func(match string) string {
-		varName := match[1:]
-		return os.Getenv(varName)
-	})
-
-	return s
 }
 
 func processGroupSysProcAttr() *syscall.SysProcAttr {
