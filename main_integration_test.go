@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -84,5 +85,104 @@ function callDBus(service,path,iface,method,payload){if(method==="Send")console.
 				t.Fatalf("fullscreen state was not preserved: %+v", preset)
 			}
 		})
+	}
+}
+
+func placementScriptForTargets(t *testing.T, monitor, desktop string) string {
+	t.Helper()
+
+	restore := savePlaceFlags()
+	defer restore()
+
+	placeAppFlag = "org.example.App"
+	placeMatchFlag = ""
+	placeGeomFlag = "0,0,100,100"
+	placeCommandFlag = "true"
+	placeAnchorFlag = "top-left"
+	placeMonitorFlag = monitor
+	placeDesktopFlag = desktop
+	placeTimeoutFlag = "1s"
+	placeCenteredFlag = false
+	placePinnedFlag = false
+	placeKeepAboveFlag = false
+	placeKeepBelowFlag = false
+
+	cfg, err := parseAndValidatePlace()
+	if err != nil {
+		t.Fatalf("parse place input: %v", err)
+	}
+
+	t.Cleanup(func() {
+		if err := os.RemoveAll(cfg.TempDir); err != nil {
+			t.Errorf("remove placement directory: %v", err)
+		}
+	})
+
+	return generateJS(jsPlacementConfig{
+		ScriptName: cfg.ScriptName,
+		App:        cfg.App,
+		Anchor:     cfg.Anchor,
+		Monitor:    cfg.Monitor,
+		Desktop:    cfg.Desktop,
+		Geom:       cfg.Geom,
+	})
+}
+
+func TestPlacePrefersExactMonitorNameOverSuffix(t *testing.T) {
+	script := placementScriptForTargets(t, "dp-1", "")
+	setup := `var added;
+var internal={name:"eDP-1",geometry:{x:0,y:0,width:1000,height:1000}};
+var external={name:"DP-1",geometry:{x:1000,y:0,width:1000,height:1000}};
+var workspace={screens:[internal,external],activeScreen:internal,desktops:[],stackingOrder:[],
+ windowAdded:{connect:function(fn){added=fn;}},sendWindowToOutput:function(w,screen){w.output=screen.name;}};
+function callDBus(){};function print(){}
+var window={internalId:"1",desktopFileName:"org.example.App",frameGeometry:{x:0,y:0,width:100,height:100}};
+`
+
+	got := runJavaScript(t, setup+script+`added(window);console.log(JSON.stringify({monitor:window.output,x:window.frameGeometry.x}));`)
+	if got != `{"monitor":"DP-1","x":1000}` {
+		t.Fatalf("placed on wrong monitor: %s", got)
+	}
+}
+
+func TestWindowActionPrefersExactMonitorNameOverSuffix(t *testing.T) {
+	restore := saveWindowFlags()
+	defer restore()
+
+	windowIDFlag = ""
+	windowAppFlag = ""
+	windowMatchFlag = ""
+	windowClassFlag = ""
+	windowDesktopFlag = ""
+	windowMonitorFlag = "dp-1"
+	windowStateFlags = nil
+	windowLimitFlag = 0
+	windowAllFlag = false
+	windowTimeoutFlag = "1s"
+
+	cfg, err := parseWindowActionConfig(windowActionClose)
+	if err != nil {
+		t.Fatalf("parse window action: %v", err)
+	}
+
+	t.Cleanup(func() {
+		if err := os.RemoveAll(cfg.TempDir); err != nil {
+			t.Errorf("remove window action directory: %v", err)
+		}
+	})
+
+	script := generateWindowActionJS(jsWindowActionConfig{ScriptName: cfg.ScriptName, Selector: cfg.Selector, Action: windowActionClose})
+
+	setup := `var closed=[];
+var internal={name:"eDP-1",geometry:{x:0,y:0,width:1000,height:1000}};
+var external={name:"DP-1",geometry:{x:1000,y:0,width:1000,height:1000}};
+var workspace={screens:[internal,external],stackingOrder:[
+ {frameGeometry:{x:1000,y:0,width:100,height:100},closeWindow:function(){closed.push("DP-1");}},
+ {frameGeometry:{x:0,y:0,width:100,height:100},closeWindow:function(){closed.push("eDP-1");}}
+]};
+function callDBus(){};function print(){}
+`
+	if got := runJavaScript(t, setup+script+`console.log(JSON.stringify(closed));`); got != `["DP-1"]` {
+		t.Fatalf("closed windows on wrong monitor: %s", got)
 	}
 }

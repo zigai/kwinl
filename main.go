@@ -5652,9 +5652,11 @@ function monitorMatchesTarget(w) {
   if (/^\d+$/.test(target)) {
     return outputIndex(out) === parseInt(target, 10);
   }
-  var name = outputName(out);
-  if (name === target || name.toLowerCase() === target.toLowerCase()) return true;
-  var have = normalizedName(name);
+  var screens = workspace.screens || [];
+  for (var i = 0; i < screens.length; i++) {
+    if (outputName(screens[i]).toLowerCase() === target.toLowerCase()) return out === screens[i];
+  }
+  var have = normalizedName(outputName(out));
   var want = normalizedName(target);
   return want !== "" && have !== "" && (have === want || have.endsWith(want) || want.endsWith(have));
 }
@@ -6573,14 +6575,13 @@ function findMonitor(id) {
   for (var i = 0; i < screens.length; i++) {
     var nm = monitorName(screens[i]);
     if (nm !== "") names.push(nm);
-    if (nm === idStr) return screens[i];
+    if (nm.toLowerCase() === idStr.toLowerCase()) return screens[i];
   }
 
   var wanted = norm(idStr);
   for (var j = 0; j < screens.length; j++) {
     var n = monitorName(screens[j]);
     if (n === "") continue;
-    if (n.toLowerCase() === idStr.toLowerCase()) return screens[j];
     var m = norm(n);
     if (wanted !== "" && m !== "" && (m === wanted || m.endsWith(wanted) || wanted.endsWith(m))) {
       return screens[j];
