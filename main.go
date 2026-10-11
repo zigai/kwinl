@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -5026,13 +5027,17 @@ func parseTimeout(s string) (time.Duration, error) {
 		return d, nil
 	}
 
-	if secs, err := strconv.Atoi(s); err == nil {
+	if secs, err := strconv.ParseInt(s, 10, 64); err == nil {
 		if secs <= 0 {
 			return 0, &ValidationError{
 				Field:   "timeout",
 				Value:   s,
 				Message: "must be greater than 0",
 			}
+		}
+
+		if secs > math.MaxInt64/int64(time.Second) {
+			return 0, &ValidationError{Field: "timeout", Value: s, Message: "duration is too large"}
 		}
 
 		return time.Duration(secs) * time.Second, nil

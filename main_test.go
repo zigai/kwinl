@@ -1784,6 +1784,31 @@ func TestCaptureYAMLPreservesMultilineDesktopName(t *testing.T) {
 	}
 }
 
+func TestPlaceRejectsOverflowingTimeout(t *testing.T) {
+	restore := savePlaceFlags()
+	defer restore()
+
+	placeAppFlag = "org.example.App"
+	placeMatchFlag = ""
+	placeGeomFlag = "0,0,100,100"
+	placeAnchorFlag = "top-left"
+	placeCommandFlag = "true"
+	placeTimeoutFlag = "9223372037"
+	placeCenteredFlag = false
+	placeKeepAboveFlag = false
+	placeKeepBelowFlag = false
+
+	cfg, err := parseAndValidatePlace()
+	if cfg.TempDir != "" {
+		defer os.RemoveAll(cfg.TempDir)
+	}
+
+	validationErr, ok := errors.AsType[*ValidationError](err)
+	if !ok || validationErr.Field != "timeout" {
+		t.Fatalf("expected timeout validation error, got %v (duration %s)", err, cfg.Timeout)
+	}
+}
+
 func TestWindowActionValidatesUnicodeRegexEscapes(t *testing.T) {
 	restore := saveWindowFlags()
 	defer restore()
