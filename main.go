@@ -6633,6 +6633,7 @@ function findMonitor(id) {
     if (!isNaN(idx) && idx >= 0 && idx < screens.length) {
       return screens[idx];
     }
+    return null;
   }
 
   var names = [];

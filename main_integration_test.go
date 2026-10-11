@@ -119,12 +119,13 @@ func placementScriptForTargets(t *testing.T, monitor, desktop string) string {
 	})
 
 	return generateJS(jsPlacementConfig{
-		ScriptName: cfg.ScriptName,
-		App:        cfg.App,
-		Anchor:     cfg.Anchor,
-		Monitor:    cfg.Monitor,
-		Desktop:    cfg.Desktop,
-		Geom:       cfg.Geom,
+		ScriptName:      cfg.ScriptName,
+		App:             cfg.App,
+		Anchor:          cfg.Anchor,
+		Monitor:         cfg.Monitor,
+		Desktop:         cfg.Desktop,
+		Geom:            cfg.Geom,
+		CallbackService: "service",
 	})
 }
 
@@ -337,5 +338,24 @@ var window={internalId:"1",desktopFileName:"org.example.App",desktops:[first],fr
 `
 	if got := runJavaScript(t, setup+script+`added(window);console.log(JSON.stringify(window.desktops));`); got != `[{"name":"1"}]` {
 		t.Fatalf("restored window on wrong desktop: %s", got)
+	}
+}
+
+func TestPlaceRejectsOutOfRangeMonitorIndex(t *testing.T) {
+	script := placementScriptForTargets(t, "2", "")
+
+	setup := `var added;
+var internal={name:"eDP-1",geometry:{x:0,y:0,width:1000,height:1000}};
+var external={name:"DP-2",geometry:{x:1000,y:0,width:1000,height:1000}};
+var failures=[];
+var workspace={screens:[internal,external],activeScreen:internal,desktops:[],stackingOrder:[],windowAdded:{connect:function(fn){added=fn;}}};
+function callDBus(service,path,iface,method,token,success,id,caption,geometry,message){if(method==="Placed")failures.push({success:success,message:message});}
+function print(){}
+var window={internalId:"1",desktopFileName:"org.example.App",frameGeometry:{x:300,y:300,width:50,height:50}};
+`
+
+	got := runJavaScript(t, setup+script+`if(added)added(window);console.log(JSON.stringify({geometry:window.frameGeometry,failures:failures}));`)
+	if got != `{"geometry":{"x":300,"y":300,"width":50,"height":50},"failures":[{"success":false,"message":"invalid monitor target: 2"}]}` {
+		t.Fatalf("invalid monitor index placed a window: %s", got)
 	}
 }
