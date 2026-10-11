@@ -315,3 +315,27 @@ var window={internalId:"1",desktopFileName:"org.example.App",desktops:[desk],fra
 		t.Fatalf("restored pinned window on one desktop: %s", got)
 	}
 }
+
+func TestCaptureRestoresNumericDesktopName(t *testing.T) {
+	t.Parallel()
+
+	capture := `var screen={name:"DP-1",geometry:{x:0,y:0,width:1000,height:1000}};
+var first={name:"work"},second={name:"1"};
+var workspace={screens:[screen],activeScreen:screen,desktops:[first,second],stackingOrder:[{
+ desktopFileName:"org.example.App",desktops:[second],frameGeometry:{x:0,y:0,width:100,height:100}
+}]};
+function callDBus(service,path,iface,method,payload){if(method==="Send")console.log(payload);}
+`
+	script := capturedPlacementScript(t, capture)
+
+	setup := `var added;
+var screen={name:"DP-1",geometry:{x:0,y:0,width:1000,height:1000}};
+var first={name:"work"},second={name:"1"};
+var workspace={screens:[screen],activeScreen:screen,desktops:[first,second],stackingOrder:[],windowAdded:{connect:function(fn){added=fn;}}};
+function callDBus(){};function print(){}
+var window={internalId:"1",desktopFileName:"org.example.App",desktops:[first],frameGeometry:{x:0,y:0,width:100,height:100}};
+`
+	if got := runJavaScript(t, setup+script+`added(window);console.log(JSON.stringify(window.desktops));`); got != `[{"name":"1"}]` {
+		t.Fatalf("restored window on wrong desktop: %s", got)
+	}
+}

@@ -7184,7 +7184,15 @@ function desktopIdForWindow(w) {
   try {
     if (w.desktops && w.desktops.length > 0) {
       var d = w.desktops[0];
-      if (d && d.name) return "" + d.name;
+      if (d && d.name) {
+        if (/^\d+$/.test(d.name)) {
+          var desktops = workspace.desktops || [];
+          for (var i = 0; i < desktops.length; i++) {
+            if (desktops[i] === d) return "" + (i + 1);
+          }
+        }
+        return "" + d.name;
+      }
     }
   } catch (e) {}
   return "";
