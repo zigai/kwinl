@@ -25,6 +25,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/dop251/goja"
 	"github.com/godbus/dbus/v5"
 	prettytable "github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
@@ -1642,12 +1643,52 @@ func normalizeWindowStates(states []string) []string {
 	return normalized
 }
 
+var regexTokenRE = regexp.MustCompile(`\\(?s:.)|[\[\]]`)
+
+func validateRegexEscapes(pattern string) error {
+	inClass := false
+
+	for _, loc := range regexTokenRE.FindAllStringIndex(pattern, -1) {
+		escape := pattern[loc[0]:loc[1]]
+		switch escape {
+		case "[":
+			inClass = true
+		case "]":
+			inClass = false
+		default:
+			char, _ := utf8.DecodeRuneInString(escape[1:])
+			if !strings.ContainsRune(`\^$.*+?()[]{}|/-bBcdDsSwWfnrtvuxkpP0123456789`, char) ||
+				(escape == `\-` && !inClass) ||
+				(escape == `\0` && loc[1] < len(pattern) && pattern[loc[1]] >= '0' && pattern[loc[1]] <= '9') {
+				return &ValidationError{Field: "regex escape", Value: escape, Message: "unsupported in Unicode mode"}
+			}
+		}
+	}
+
+	return nil
+}
+
+func validateRegex(pattern string) error {
+	if err := validateRegexEscapes(pattern); err != nil {
+		return err
+	}
+
+	vm := goja.New()
+
+	_, err := vm.New(vm.Get("RegExp"), vm.ToValue(pattern), vm.ToValue("u"))
+	if err != nil {
+		return fmt.Errorf("compile ECMAScript regex: %w", err)
+	}
+
+	return nil
+}
+
 func validateWindowRegexSelector(field, value string) error {
 	if value == "" {
 		return nil
 	}
 
-	if _, err := regexp.Compile(value); err != nil {
+	if err := validateRegex(value); err != nil {
 		return &ValidationError{
 			Field:   field,
 			Value:   value,
@@ -3017,7 +3058,7 @@ func validatePlaceSelectorsAndAnchor() error {
 	}
 
 	if placeMatchFlag != "" {
-		if _, err := regexp.Compile(placeMatchFlag); err != nil {
+		if err := validateRegex(placeMatchFlag); err != nil {
 			return &ValidationError{
 				Field:   "match",
 				Value:   placeMatchFlag,
@@ -4788,7 +4829,7 @@ func validatePresetIdentity(label string, p Preset) error {
 	}
 
 	if strings.TrimSpace(p.Match) != "" {
-		if _, err := regexp.Compile(p.Match); err != nil {
+		if err := validateRegex(p.Match); err != nil {
 			return presetErr(label, &ValidationError{Field: "match", Value: p.Match, Message: "invalid regex: " + err.Error()})
 		}
 	}
@@ -5547,7 +5588,7 @@ function isManageable(w) {
 function regexMatches(value, pattern) {
   if (pattern === "") return true;
   try {
-    return new RegExp(pattern).test(value || "");
+    return new RegExp(pattern, "u").test(value || "");
   } catch (e) {
     vlog("regexMatches: regex error", e);
     return false;
@@ -6486,7 +6527,7 @@ function appMatches(w) {
   }
   if (TARGET_MATCH !== "") {
     try {
-      var re = new RegExp(TARGET_MATCH);
+      var re = new RegExp(TARGET_MATCH, "u");
       var caption = w.caption || "";
       if (re.test(caption)) { vlog("appMatches: regex match caption=", caption); return true; }
     } catch (e) { vlog("appMatches: regex error", e); }

@@ -1750,3 +1750,57 @@ func TestWindowStateStringFormatsCommonStates(t *testing.T) {
 		t.Fatalf("unexpected empty state string: %q", emptyState)
 	}
 }
+
+func TestWindowActionValidatesUnicodeRegexEscapes(t *testing.T) {
+	restore := saveWindowFlags()
+	defer restore()
+
+	windowIDFlag = ""
+	windowAppFlag = ""
+	windowClassFlag = ""
+	windowDesktopFlag = ""
+	windowMonitorFlag = ""
+	windowStateFlags = nil
+	windowLimitFlag = 0
+	windowAllFlag = false
+	windowTimeoutFlag = "1s"
+
+	tests := []struct {
+		name, pattern string
+		invalid       bool
+	}{
+		{"go_only_anchors", `\Aa\z`, true},
+		{"hyphen_outside_class", `\-`, true},
+		{"hyphen_in_class", `[\-]`, false},
+		{"legacy_octal", `\00`, true},
+		{"null_escape", `\0`, false},
+		{"literal_backslash", `\\A`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			windowMatchFlag = tt.pattern
+
+			cfg, err := parseWindowActionConfig(windowActionClose)
+			if cfg.TempDir != "" {
+				t.Cleanup(func() {
+					if err := os.RemoveAll(cfg.TempDir); err != nil {
+						t.Errorf("remove window action directory: %v", err)
+					}
+				})
+			}
+
+			if !tt.invalid {
+				if err != nil {
+					t.Fatalf("valid regex rejected: %v", err)
+				}
+
+				return
+			}
+
+			validationErr, ok := errors.AsType[*ValidationError](err)
+			if !ok || validationErr.Field != "match" || validationErr.Value != tt.pattern {
+				t.Fatalf("expected regex validation error for %q, got %v", tt.pattern, err)
+			}
+		})
+	}
+}
