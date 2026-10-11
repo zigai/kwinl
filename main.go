@@ -4500,6 +4500,7 @@ type capturePayload struct {
 		Anchor     string `json:"anchor"`
 		Maximized  string `json:"maximized"`
 		FullScreen bool   `json:"fullscreen"`
+		Pinned     bool   `json:"pinned"`
 		Geom       struct {
 			X      string `json:"x"`
 			Y      string `json:"y"`
@@ -4538,7 +4539,7 @@ func buildTemplateFromCapturePayload(payload string) (Template, error) {
 			Maximized:  p.Maximized,
 			FullScreen: p.FullScreen,
 			Centered:   false,
-			Pinned:     false,
+			Pinned:     p.Pinned,
 			Minimized:  false,
 			KeepAbove:  false,
 			KeepBelow:  false,
@@ -7274,6 +7275,7 @@ function capture() {
       anchor: "top-left",
       maximized: getMaximizedState(w),
       fullscreen: w.fullScreen || false,
+      pinned: !!(w.desktops && w.desktops.length === 0),
       geometry: {
         x: "" + rx,
         y: "" + ry,

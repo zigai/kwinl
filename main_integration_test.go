@@ -259,3 +259,59 @@ var intended={internalId:"2",desktopFileName:"org.example.App",resourceClass:"Ap
 		t.Fatalf("placed unrelated application: %s", got)
 	}
 }
+
+func capturedPlacementScript(t *testing.T, setup string) string {
+	t.Helper()
+
+	payload := runJavaScript(t, setup+generateCaptureJS("script", "service", captureOptions{InferCommand: true}))
+
+	template, err := buildTemplateFromCapturePayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := marshalCaptureTemplate(template, formatJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := parseTemplateFromReader("capture", strings.NewReader(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := validateTemplate(loaded); err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := buildLaunchPresetRun(0, loaded.Presets[0], t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return generateJS(run.JSConfig)
+}
+
+func TestCaptureRestoresPinnedWindow(t *testing.T) {
+	t.Parallel()
+
+	capture := `var screen={name:"DP-1",geometry:{x:0,y:0,width:1000,height:1000}};
+var desk={name:"work"};
+var workspace={screens:[screen],activeScreen:screen,desktops:[desk],stackingOrder:[{
+ desktopFileName:"org.example.App",desktops:[],frameGeometry:{x:0,y:0,width:100,height:100}
+}]};
+function callDBus(service,path,iface,method,payload){if(method==="Send")console.log(payload);}
+`
+	script := capturedPlacementScript(t, capture)
+
+	setup := `var added;
+var screen={name:"DP-1",geometry:{x:0,y:0,width:1000,height:1000}};
+var desk={name:"work"};
+var workspace={screens:[screen],activeScreen:screen,desktops:[desk],stackingOrder:[],windowAdded:{connect:function(fn){added=fn;}}};
+function callDBus(){};function print(){}
+var window={internalId:"1",desktopFileName:"org.example.App",desktops:[desk],frameGeometry:{x:0,y:0,width:100,height:100}};
+`
+	if got := runJavaScript(t, setup+script+`added(window);console.log(JSON.stringify(window.desktops));`); got != `[]` {
+		t.Fatalf("restored pinned window on one desktop: %s", got)
+	}
+}
