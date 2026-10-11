@@ -6597,9 +6597,9 @@ function findMonitor(id) {
 function findDesktop(id) {
   if (!id || id === "") return null;
   var desktops = workspace.desktops;
-  var idx = parseInt(id);
-  if (!isNaN(idx) && idx >= 1 && idx <= desktops.length) {
-    return desktops[idx - 1];
+  if (/^\d+$/.test(id)) {
+    var idx = parseInt(id, 10);
+    if (idx >= 1 && idx <= desktops.length) return desktops[idx - 1];
   }
   for (var i = 0; i < desktops.length; i++) {
     if (desktops[i].name === id) return desktops[i];

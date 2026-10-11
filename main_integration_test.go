@@ -145,6 +145,22 @@ var window={internalId:"1",desktopFileName:"org.example.App",frameGeometry:{x:0,
 	}
 }
 
+func TestPlaceResolvesDigitPrefixedDesktopName(t *testing.T) {
+	script := placementScriptForTargets(t, "", "1-work")
+	setup := `var added;
+var screen={name:"DP-1",geometry:{x:0,y:0,width:1000,height:1000}};
+var workspace={screens:[screen],activeScreen:screen,desktops:[{name:"main"},{name:"1-work"}],stackingOrder:[],
+ windowAdded:{connect:function(fn){added=fn;}}};
+function callDBus(){};function print(){}
+var window={internalId:"1",desktopFileName:"org.example.App",frameGeometry:{x:0,y:0,width:100,height:100}};
+`
+
+	got := runJavaScript(t, setup+script+`added(window);console.log(window.desktops[0].name);`)
+	if got != "1-work" {
+		t.Fatalf("placed on wrong desktop: %q", got)
+	}
+}
+
 func TestWindowActionPrefersExactMonitorNameOverSuffix(t *testing.T) {
 	restore := saveWindowFlags()
 	defer restore()
