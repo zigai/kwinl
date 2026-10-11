@@ -7143,6 +7143,7 @@ function isOnMonitor(w, fg) {
 }
 
 function getMaximizedState(w) {
+  if (w.fullScreen) return "";
   var h = w.maximizedHorizontally || false;
   var v = w.maximizedVertically || false;
   if (h && v) return "both";
