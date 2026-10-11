@@ -3852,8 +3852,71 @@ func writeCaptureOutput(outPath string, data []byte) error {
 		return nil
 	}
 
-	if err := os.WriteFile(outPath, data, 0o600); err != nil {
-		return fmt.Errorf("failed to write %q: %w", outPath, err)
+	return writeCaptureFile(outPath, data)
+}
+
+func writeCaptureFile(outPath string, data []byte) (err error) {
+	resolved, resolveErr := filepath.EvalSymlinks(outPath)
+	if resolveErr == nil {
+		outPath = resolved
+	} else if !errors.Is(resolveErr, os.ErrNotExist) {
+		return fmt.Errorf("resolve capture output: %w", resolveErr)
+	}
+
+	dir, err := os.OpenRoot(filepath.Dir(outPath))
+	if err != nil {
+		return fmt.Errorf("open capture directory: %w", err)
+	}
+	defer func() { err = errors.Join(err, dir.Close()) }()
+
+	name := filepath.Base(outPath)
+	mode := os.FileMode(0o600)
+
+	info, err := dir.Stat(name)
+	if err == nil {
+		mode = info.Mode().Perm()
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat capture output: %w", err)
+	}
+
+	file, err := os.CreateTemp(dir.Name(), ".capture-*")
+	if err != nil {
+		return fmt.Errorf("create capture output: %w", err)
+	}
+
+	tempName := filepath.Base(file.Name())
+	defer func() {
+		if removeErr := dir.Remove(tempName); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			err = errors.Join(err, fmt.Errorf("remove temporary capture output: %w", removeErr))
+		}
+	}()
+
+	if err := file.Chmod(mode); err != nil {
+		return fmt.Errorf("set capture output permissions: %w", errors.Join(err, file.Close()))
+	}
+
+	if err := writeCaptureData(file, data); err != nil {
+		return err
+	}
+
+	if err := dir.Rename(tempName, name); err != nil {
+		return fmt.Errorf("replace capture output: %w", err)
+	}
+
+	return nil
+}
+
+func writeCaptureData(file *os.File, data []byte) error {
+	if _, err := file.Write(data); err != nil {
+		return fmt.Errorf("write capture output: %w", errors.Join(err, file.Close()))
+	}
+
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync capture output: %w", errors.Join(err, file.Close()))
+	}
+
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close capture output: %w", err)
 	}
 
 	return nil

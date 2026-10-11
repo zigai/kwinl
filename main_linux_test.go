@@ -5,10 +5,12 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -202,4 +204,60 @@ func (s *launchBus) unloadScript(name string) *dbus.Error {
 	delete(s.loaded, name)
 
 	return nil
+}
+
+func TestWriteCaptureOutputPreservesFileOnPartialWrite(t *testing.T) {
+	if path := os.Getenv("TEST_CAPTURE_PATH"); path != "" {
+		signal.Ignore(syscall.SIGXFSZ)
+
+		var limit syscall.Rlimit
+		if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &limit); err != nil {
+			t.Fatal(err)
+		}
+
+		limit.Cur = 8
+		if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &limit); err != nil {
+			t.Fatal(err)
+		}
+
+		err := writeCaptureOutput(path, []byte(`{"version":1,"presets":[{"app":"org.example.App","command":["true"],"geometry":{"x":0,"y":0,"width":1,"height":1}}]}`))
+		if !errors.Is(err, syscall.EFBIG) {
+			t.Fatalf("expected file-size write failure, got %v", err)
+		}
+
+		return
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "layout.json")
+
+	original := []byte(`{"version":1,"presets":[{"app":"org.example.App","command":["true"],"geometry":{"x":0,"y":0,"width":100,"height":100}}]}`)
+	if err := os.WriteFile(path, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestWriteCaptureOutputPreservesFileOnPartialWrite$")
+
+	cmd.Env = append(os.Environ(), "TEST_CAPTURE_PATH="+path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("run limited writer: %v\n%s", err, out)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(got) != string(original) {
+		t.Fatalf("failed capture changed saved layout: got %q want %q", got, original)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(entries) != 1 || entries[0].Name() != "layout.json" {
+		t.Fatalf("temporary capture files remain: %v", entries)
+	}
 }
