@@ -46,21 +46,17 @@ format:
 lint:
     go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{golangci_lint_version}} run
 
-# Build the binary
+# Build the binary with version info
 build:
-    go build -o kwinl .
+    go build -ldflags "-X main.version=dev -X main.commit=$(git rev-parse --short HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o kwinl .
 
 # Install the binary
 install:
-    go install .
+    GOBIN="$HOME/.local/bin" go install -trimpath -ldflags='-s -w' .
 
 # Remove build artifacts
 clean:
     rm -rf kwinl kwinl.exe dist/
-
-# Build with version info (local dev)
-build-dev:
-    go build -ldflags "-X main.version=dev -X main.commit=$(git rev-parse --short HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o kwinl .
 
 # Test goreleaser locally
 release-dry-run:
@@ -131,5 +127,4 @@ release-major: _release-check
     git tag "$new"
     git push origin "$new"
 
-alias release := release-patch
 alias fmt := format
