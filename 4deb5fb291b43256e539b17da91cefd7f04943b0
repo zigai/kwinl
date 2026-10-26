@@ -1,0 +1,1 @@
+- Run just check with the cache ignore rule; lint, tests, race tests, formatting, module checks and build pass.
