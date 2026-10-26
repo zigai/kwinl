@@ -1,0 +1,2 @@
+- just --summary parses every changed Justfile in the repository
+- just -n dry runs of the renamed and merged recipes print the expected commands
