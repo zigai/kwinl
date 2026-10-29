@@ -40,6 +40,7 @@ fix:
 
 # Format Go source files
 format:
+    go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{golangci_lint_version}} run --fix --enable-only whitespace --issues-exit-code=0
     go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{golangci_lint_version}} fmt
 
 # Run golangci-lint without --fix
