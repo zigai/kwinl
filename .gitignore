@@ -45,3 +45,6 @@ spikes/**/dist/
 # .idea/
 # .vscode/
 example*.yaml
+
+/bin/
+coverage/

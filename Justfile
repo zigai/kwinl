@@ -1,131 +1,166 @@
+# Run the commit checks
+check: (run-checks "formatcheck" "lockcheck" "lint" "build-check" "test")
 
-golangci_lint_version := "v2.14.0"
-goreleaser_version := "v2.13.3"
+# Run fast Go unit tests
+[positional-arguments]
+test *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if (( $# )); then go test "$@"; else go test ./...; fi
 
-_:
-    @just help
-
-# List available commands
-help:
-    @just --list
-
-# Run all non-mutating checks
-check: lint test race
-    go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{golangci_lint_version}} fmt --diff
-    go mod tidy -diff
-    go build -o /dev/null .
-
-# Run all tests
-test:
-    go test ./...
-
-# Run tests and display coverage
+# Measure all local test suites and print coverage
 coverage:
-    #!/usr/bin/env sh
-    set -e
-    coverage_file=$(mktemp)
-    trap 'rm -f "$coverage_file"' EXIT
-    go test -coverprofile="$coverage_file" ./...
-    go tool cover -func="$coverage_file"
-
-alias cov := coverage
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf coverage
+    mkdir -p coverage
+    coverage_package=$(awk '$1 == "module" {gsub(/"/, "", $2); print $2; exit}' go.mod)
+    go test -coverpkg=./... ./... -args -test.gocoverdir="$PWD/coverage"
+    go tool covdata percent -i coverage -pkg "$coverage_package/..."
+    go tool covdata textfmt -i coverage -o coverage/profile.txt -pkg "$coverage_package/..."
+    go tool cover -func coverage/profile.txt | awk '$1 == "total:"'
 
 # Run tests with the Go race detector
 race:
     go test -race ./...
 
-# Run golangci-lint with --fix
+# Apply safe lint autofixes, then format every supported file type
 fix:
-    go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{golangci_lint_version}} run --fix
+    golangci-lint run --fix
+    just format
 
-# Format Go source files
+# Format every supported first-party file type
 format:
-    go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{golangci_lint_version}} run --fix --enable-only whitespace --issues-exit-code=0
-    go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{golangci_lint_version}} fmt
+    @golangci-lint run --fix --enable-only whitespace --issues-exit-code=0
+    @golangci-lint fmt
+    @git ls-files -co --exclude-standard -z | while IFS= read -r -d '' file; do if [[ -f $file ]]; then printf '%s\0' "$file"; fi; done | xargs -0 -r shfmt -f | xargs -r -d '\n' shfmt -w
+    @git ls-files -co --exclude-standard -- Justfile justfile "*.just" | while IFS= read -r file; do just --justfile "$file" --fmt; done
+    @just markdown fmt
 
-# Run golangci-lint without --fix
+# Run every configured linter on the whole project, stopping on failure
 lint:
-    go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@{{golangci_lint_version}} run
+    @golangci-lint run
 
 # Build the binary with version info
 build:
-    go build -ldflags "-X main.version=dev -X main.commit=$(git rev-parse --short HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o kwinl .
+    go build -ldflags "-X main.version=dev -X main.commit=$(git rev-parse --short HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o bin/kwinl .
 
-# Install the binary
-install:
+# Install the command to ~/.local/bin
+install: && (report-install home_directory() / ".local/bin/kwinl")
     GOBIN="$HOME/.local/bin" go install -trimpath -ldflags='-s -w' .
 
-# Remove build artifacts
-clean:
-    rm -rf kwinl kwinl.exe dist/
+# Remove generated output and caches
+clean: (remove "bin" "kwinl" "kwinl.exe" "dist" "coverage.out" "*.test" "*.prof" "coverage")
 
-# Test goreleaser locally
-release-dry-run:
-    go run github.com/goreleaser/goreleaser/v2@{{goreleaser_version}} release --snapshot --clean
+# Check the same files and tools without writing
+formatcheck:
+    @golangci-lint run --enable-only whitespace
+    @golangci-lint fmt --diff
+    @git ls-files -co --exclude-standard -z | while IFS= read -r -d '' file; do if [[ -f $file ]]; then printf '%s\0' "$file"; fi; done | xargs -0 -r shfmt -f | xargs -r -d '\n' shfmt -d
+    @git ls-files -co --exclude-standard -- Justfile justfile "*.just" | while IFS= read -r file; do just --justfile "$file" --fmt --check; done
+    @just markdown check
 
-# Pre-release safety checks
-_release-check:
-    #!/usr/bin/env sh
-    set -e
-    if [ -n "$(git status --porcelain)" ]; then
-        echo "Error: uncommitted changes. Commit or stash first." >&2
-        exit 1
-    fi
-    branch=$(git branch --show-current)
-    if [ "$branch" != "master" ]; then
-        echo "Error: not on master branch (on $branch)" >&2
-        exit 1
-    fi
-    git fetch origin master --tags
-    local_head=$(git rev-parse HEAD)
-    remote_head=$(git rev-parse origin/master)
-    if [ "$local_head" != "$remote_head" ]; then
-        echo "Error: local master differs from origin/master. Pull or push first." >&2
-        exit 1
-    fi
-    latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-    if [ -n "$latest_tag" ]; then
-        tag_commit=$(git rev-parse "$latest_tag"^{})
-        if [ "$local_head" = "$tag_commit" ]; then
-            echo "Error: HEAD is already tagged as $latest_tag. Make new commits first." >&2
-            exit 1
-        fi
-    fi
+# Run the commit checks and slow suites
+checkfull: (run-checks "formatcheck" "lockcheck" "lint" "build-check" "test" "race")
 
-# Release a new patch version (eg. v1.0.0 -> v1.0.1)
-release-patch: _release-check
-    #!/usr/bin/env sh
-    set -e
-    latest=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-    major=$(echo "$latest" | sed 's/v//' | cut -d. -f1)
-    minor=$(echo "$latest" | sed 's/v//' | cut -d. -f2)
-    patch=$(echo "$latest" | sed 's/v//' | cut -d. -f3)
-    new="v${major}.${minor}.$((patch + 1))"
-    echo "Releasing $new (was $latest)"
-    git tag "$new"
-    git push origin "$new"
+# Synchronize dependency locks without upgrading dependencies
+[no-exit-message]
+lock:
+    @go mod tidy
 
-# Release a new minor version (eg. v1.0.0 -> v1.1.0)
-release-minor: _release-check
-    #!/usr/bin/env sh
-    set -e
-    latest=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-    major=$(echo "$latest" | sed 's/v//' | cut -d. -f1)
-    minor=$(echo "$latest" | sed 's/v//' | cut -d. -f2)
-    new="v${major}.$((minor + 1)).0"
-    echo "Releasing $new (was $latest)"
-    git tag "$new"
-    git push origin "$new"
+# Verify dependency manifests and locks without changing files
+[no-exit-message]
+lockcheck:
+    @go mod tidy -diff
 
-# Release a new major version (eg. v1.0.0 -> v2.0.0)
-release-major: _release-check
-    #!/usr/bin/env sh
-    set -e
-    latest=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-    major=$(echo "$latest" | sed 's/v//' | cut -d. -f1)
-    new="v$((major + 1)).0.0"
-    echo "Releasing $new (was $latest)"
-    git tag "$new"
-    git push origin "$new"
+# Install repository dependencies
+setup:
+    @go mod download
 
+# List available recipes
+[default]
+help:
+    @just --list
+
+alias cov := coverage
 alias fmt := format
+
+[positional-arguments]
+[private]
+remove +paths:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    shopt -s nullglob globstar
+    size() { LC_ALL=C numfmt --from-unit=1024 --to=iec-i --suffix=B --format=%.1f "$1"; }
+    rows=() total=0
+    for pattern in "$@"; do
+        found=()
+        for path in $pattern; do
+            if [[ -e $path || -L $path ]]; then found+=("$path"); fi
+        done
+        if (( ${#found[@]} == 0 )); then continue; fi
+        kib=$(du -sck -- "${found[@]}" | tail -n1 | cut -f1)
+        rm -rf -- "${found[@]}"
+        label=$pattern
+        if (( ${#found[@]} > 1 )); then label+=" (${#found[@]})"; fi
+        rows+=("removed  $label|$(size "$kib")")
+        total=$(( total + kib ))
+    done
+    if [[ -n ${CLEAN_TOTAL_FILE:-} ]]; then echo "$total" >> "$CLEAN_TOTAL_FILE"; fi
+    if (( ${#rows[@]} == 0 )); then echo "nothing to clean"; exit 0; fi
+    printf '%s\n' "${rows[@]}" "total freed|$(size "$total")" | column -t -s '|' -R 2
+
+[positional-arguments]
+[private]
+report-install +paths:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rows=() warnings=() status=0
+    for path in "$@"; do
+        name=$(basename "$path") real=$(realpath "$path")
+        sized=$real venv=$(dirname "$(dirname "$real")")
+        [[ -f $venv/pyvenv.cfg ]] && sized=$venv
+        if ! version=$("$path" --version 2>&1); then
+            "$path" --help >/dev/null 2>&1 || { echo "failed     $path does not start" >&2; status=1; continue; }
+            version=-
+        fi
+        rows+=("installed|$name|${path/#$HOME/\~}|$(du -sk "$sized" | cut -f1 | LC_ALL=C numfmt --from-unit=1024 --to=iec-i --suffix=B --format=%.1f)|${version%%$'\n'*}")
+        first=$(command -v "$name")
+        [[ $(realpath "$first") == "$real" ]] || warnings+=("warning    $name: PATH finds ${first/#$HOME/\~} first")
+    done
+    if (( ${#rows[@]} )); then printf '%s\n' "${rows[@]}" | column -t -s '|' -R 4; fi
+    if (( ${#warnings[@]} )); then printf '%s\n' "${warnings[@]}"; fi
+    exit "$status"
+
+[private]
+build-check:
+    go build -o /dev/null .
+
+[positional-arguments]
+[private]
+run-checks +steps:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    LC_NUMERIC=C
+    log_dir="${XDG_CACHE_HOME:-$HOME/.cache}/just-check"
+    mkdir -p "$log_dir"
+    log=$(mktemp "$log_dir/step.XXXXXX")
+    trap 'rm -f "$log"' EXIT
+    width=0 failed=()
+    for step in "$@"; do (( ${#step} > width )) && width=${#step}; done
+    for step in "$@"; do
+        read -ra command <<< "$step"
+        printf 'check  %-*s  ' "$width" "$step"
+        start=$EPOCHREALTIME
+        run=(just --justfile {{ quote(justfile()) }} "${command[@]}")
+        if [[ -t 1 ]]; then run=(script -qefc "${run[*]@Q}" /dev/null); fi
+        if "${run[@]}" < /dev/null > "$log" 2>&1; then status=ok; else status=FAIL; failed+=("$step"); fi
+        printf '%-4s  %7.1fs\n' "$status" "$(LC_NUMERIC=C awk -v a="$start" -v b="$EPOCHREALTIME" 'BEGIN { print b - a }')"
+        if [[ "$status" == FAIL ]]; then sed 's/\r$//; s/^/    /' "$log"; fi
+    done
+    if (( ${#failed[@]} )); then printf '%d of %d failed: %s\n' "${#failed[@]}" "$#" "${failed[*]}"; exit 1; fi
+    printf 'all %d passed\n' "$#"
+
+[private]
+markdown *args:
+    rumdl {{ args }} --disable MD001,MD013,MD024,MD025,MD026,MD031,MD032,MD033,MD034,MD036,MD041,MD058 --config 'MD060.enabled=true' --config 'MD060.style="aligned"' --config 'MD003.style="atx"' --config 'MD004.style="dash"' --config 'MD029.style="ordered"' --config 'MD046.style="fenced"' --config 'MD048.style="backtick"' --config 'MD049.style="asterisk"' --config 'MD050.style="asterisk"' --config 'MD055.style="leading_and_trailing"'

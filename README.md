@@ -46,7 +46,7 @@ go build -o kwinl .
 
 #### kwinl place
 
-```
+```text
 Loads a temporary KWin script via D-Bus that intercepts newly created
 windows matching the specified application ID or title pattern and moves/resizes
 them to the requested geometry. Only windows created after the script loads are affected.
@@ -90,7 +90,7 @@ either can trigger a match (OR logic).
 
 #### kwinl launch
 
-```
+```text
 Reads a template file containing multiple window presets and launches
 all specified applications with their configured geometries.
 
@@ -117,7 +117,7 @@ Notes:
 
 #### kwinl windows
 
-```
+```text
 Search and control existing KWin windows. Selectors are combined with AND logic
 by default; use --any to match any provided selector.
 
@@ -168,7 +168,7 @@ The old "search" spelling remains available as an alias for "list".
 
 #### kwinl desktops
 
-```
+```text
 Inspect and change KWin virtual desktops.
 
 Examples:
@@ -187,7 +187,7 @@ Text output:
 
 #### kwinl mouse
 
-```
+```text
 Inspect the pointer and send basic pointer input.
 
 Query examples:
@@ -215,7 +215,7 @@ Notes:
 
 #### kwinl layouts list
 
-```
+```text
 Lists saved layouts from ~/.config/kwinl.
 
 Usage:
@@ -233,7 +233,7 @@ Behavior:
 
 #### kwinl layouts launch
 
-```
+```text
 Launches a saved layout by name from ~/.config/kwinl.
 
 Usage:
@@ -251,7 +251,7 @@ Name resolution:
 
 #### kwinl layouts remove
 
-```
+```text
 Removes a saved layout by name from ~/.config/kwinl.
 
 Usage:
@@ -266,7 +266,7 @@ Name resolution rules are the same as "kwinl layouts launch".
 
 #### kwinl capture
 
-```
+```text
 Captures the geometry/monitor/desktop of currently open windows and writes a YAML
 or JSON template (based on output file extension) suitable for use with "kwinl launch".
 
@@ -313,7 +313,7 @@ Global Flags:
 
 #### kwinl completion
 
-```
+```text
 Generate the autocompletion script for kwinl for the specified shell.
 See each sub-command's help for details on how to use the generated script.
 
@@ -335,7 +335,7 @@ Global Flags:
 
 #### kwinl validate
 
-```
+```text
 Validates a YAML/JSON layout file for syntax errors, missing fields,
 and invalid values without launching any windows.
 
@@ -355,7 +355,7 @@ Global Flags:
 
 #### kwinl cleanup
 
-```
+```text
 Discovers and unloads orphaned kwinl scripts. Newly loaded scripts are recorded with
 their exact KWin object path so cleanup works on KWin 6 after an interrupted or killed
 kwinl process; legacy script discovery remains available for compatibility.
@@ -397,24 +397,24 @@ presets:
 
 #### Preset fields
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `name` | yes | Preset identifier |
-| `app` | one of app/match | Application ID to match (e.g., `org.kde.konsole`) |
-| `match` | one of app/match | Regex pattern to match window title (e.g., `^Firefox$`) |
-| `command` | yes | Command to launch (array recommended, string accepted) |
-| `geometry` | yes* | Window geometry with `x`, `y`, `width`, `height` |
-| `tile` | no | Quick-tile mode: `left`, `right`, `top`, `bottom`, `top-left`, `top-right`, `bottom-left`, `bottom-right` |
-| `anchor` | no | Anchor point for positioning (default: `top-left`) |
-| `monitor` | no | Target monitor (index or name like `DP-1`) |
-| `desktop` | no | Target virtual desktop (1-based index or name) |
-| `maximized` | no | Maximize state: `horizontal`, `vertical`, or `both` |
-| `fullscreen` | no | Set to `true` to make window fullscreen |
-| `centered` | no | Set to `true` to center window (overrides x, y, anchor) |
-| `pinned` | no | Set to `true` to show window on all virtual desktops |
-| `minimized` | no | Set to `true` to start window minimized |
-| `keepAbove` | no | Set to `true` to keep window above others (always on top) |
-| `keepBelow` | no | Set to `true` to keep window below others |
+| Field        | Required         | Description                                                                                               |
+| ------------ | ---------------- | --------------------------------------------------------------------------------------------------------- |
+| `name`       | yes              | Preset identifier                                                                                         |
+| `app`        | one of app/match | Application ID to match (e.g., `org.kde.konsole`)                                                         |
+| `match`      | one of app/match | Regex pattern to match window title (e.g., `^Firefox$`)                                                   |
+| `command`    | yes              | Command to launch (array recommended, string accepted)                                                    |
+| `geometry`   | yes*             | Window geometry with `x`, `y`, `width`, `height`                                                          |
+| `tile`       | no               | Quick-tile mode: `left`, `right`, `top`, `bottom`, `top-left`, `top-right`, `bottom-left`, `bottom-right` |
+| `anchor`     | no               | Anchor point for positioning (default: `top-left`)                                                        |
+| `monitor`    | no               | Target monitor (index or name like `DP-1`)                                                                |
+| `desktop`    | no               | Target virtual desktop (1-based index or name)                                                            |
+| `maximized`  | no               | Maximize state: `horizontal`, `vertical`, or `both`                                                       |
+| `fullscreen` | no               | Set to `true` to make window fullscreen                                                                   |
+| `centered`   | no               | Set to `true` to center window (overrides x, y, anchor)                                                   |
+| `pinned`     | no               | Set to `true` to show window on all virtual desktops                                                      |
+| `minimized`  | no               | Set to `true` to start window minimized                                                                   |
+| `keepAbove`  | no               | Set to `true` to keep window above others (always on top)                                                 |
+| `keepBelow`  | no               | Set to `true` to keep window below others                                                                 |
 
 \* `geometry` is required unless `tile` is set.
 `tile` cannot be combined with `centered`, `maximized`, or `fullscreen`.
