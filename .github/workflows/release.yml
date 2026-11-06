@@ -5,9 +5,6 @@ on:
     tags:
       - "v*"
 
-env:
-  GORELEASER_VERSION: v2.13.3
-
 permissions:
   contents: write
 
@@ -30,7 +27,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
-          version: ${{ env.GORELEASER_VERSION }}
+          version: v2.13.3
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
