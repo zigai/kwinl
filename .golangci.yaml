@@ -7,10 +7,19 @@ formatters:
   enable:
     - goimports
     - gofumpt
+    - golines
   settings:
+    gofumpt:
+      extra:
+        balance-calls: true
+    golines:
+      max-len: 100
+      reformat-tags: false
     goimports:
       local-prefixes:
         - github.com/zigai/kwinl
+  exclusions:
+    paths:
 
 linters:
   enable:
@@ -64,6 +73,7 @@ linters:
     - interfacebloat
     - intrange
     - iotamixing
+    - lll
     - loggercheck
     - maintidx
     - makezero
@@ -112,6 +122,9 @@ linters:
     - zerologlint
 
   settings:
+    thelper:
+      benchmark:
+        begin: false
     embeddedstructfieldcheck:
       forbid-mutex: true
     errcheck:
@@ -120,7 +133,6 @@ linters:
     exhaustive:
       check:
         - switch
-        - map
 
     gochecksumtype:
       default-signifies-exhaustive: false
@@ -129,7 +141,7 @@ linters:
       max-complexity: 12
 
     decorder:
-      disable-dec-order-check: true
+      disable-dec-order-check: false
       dec-order:
         - const
         - var
@@ -145,7 +157,11 @@ linters:
     goconst:
       min-occurrences: 16
 
+    lll:
+      line-length: 120
+      tab-width: 4
     gocritic:
+      enabled-tags: [diagnostic]
       settings:
         captLocal:
           paramsOnly: false
@@ -165,6 +181,10 @@ linters:
 
     mnd:
       ignored-numbers:
+        - "0o600"
+        - "0o644"
+        - "0o700"
+        - "0o750"
         - "0600"
         - "0644"
         - "0700"
@@ -209,6 +229,8 @@ linters:
         - name: indent-error-flow
         - name: superfluous-else
         - name: modifies-parameter
+        - name: enforce-repeated-arg-type-style
+          arguments: ["full"]
         - name: unreachable-code
           disabled: true
         - name: redefines-builtin-id
@@ -218,6 +240,28 @@ linters:
       packages:
         - github.com/jmoiron/sqlx
 
+    tagliatelle:
+      case:
+        rules:
+          json: camel
+          yaml: camel
+          toml: camel
+    exhaustruct_v5:
+      allow-empty-returns: true
+      # Types whose zero fields mean "use the default". Mark such types in
+      # this module with //exhaustruct:optional instead of listing them here.
+      ignore-patterns:
+        - "^github\\.com/spf13/cobra\\..+$"
+        - "^github\\.com/spf13/pflag\\..+$"
+        - "^github\\.com/urfave/cli(/v[0-9]+)?\\..+$"
+        - "^net/http\\.(Client|Server|Transport)$"
+        - "^net\\.(Dialer|ListenConfig)$"
+        - "^net/url\\.URL$"
+        - "^crypto/tls\\.Config$"
+        - "^log/slog\\.HandlerOptions$"
+        - "^os/exec\\.Cmd$"
+        - "^syscall\\.SysProcAttr$"
+        - "^github\\.com/jedib0t/go-pretty/v6/table\\.ColumnConfig$"
     staticcheck:
       checks:
         - all
@@ -226,13 +270,14 @@ linters:
         - -QF1008
 
     nolintlint:
-      allow-no-explanation: [funlen, gocognit, golines]
+      allow-no-explanation: [gocognit, golines]
       require-explanation: true
       require-specific: true
 
     gosec:
       excludes:
-        - G204 # exec.Command from $EDITOR is user-controlled by design
+        - G306 # file perms
+        - G204 # subprocess launched with variable
         - G301 # directory perms
         - G302 # file perms
         - G304 # file path from variable
@@ -248,19 +293,6 @@ linters:
       - path: "main\\.go"
         linters: [mnd]
 
-      - source: "cobra\\."
-        linters: [exhaustruct_v5]
-      - text: "main\\.tableColumn"
-        linters: [exhaustruct_v5]
-      - text: "main\\.tableRenderOptions"
-        linters: [exhaustruct_v5]
-      - text: "table\\.ColumnConfig"
-        linters: [exhaustruct_v5]
-      - text: "prettytable\\.ColumnConfig"
-        linters: [exhaustruct_v5]
-      - source: "TODO"
-        linters: [godot]
-
       - path: "_test\\.go"
         linters:
           - bodyclose
@@ -273,6 +305,26 @@ linters:
           - cyclop
           - decorder
           - funcorder
+          - dupl
+          - maintidx
+
+      # Test-helper packages (named like httptest) only build fixtures.
+      - path: "(^|/)[a-z0-9]+test/"
+        linters: [exhaustruct_v5]
+
+      # These raw KWin scripts and JavaScript fixtures preserve their exact embedded bytes.
+      - path: "^main\\.go$"
+        linters: [lll]
+        text: "^The line is [0-9]+ characters long"
+        source: "^(?:\\ \\ \\ \\ \\ \\ vlog\\(\"ensure\\(tile\\):\\ current=\",\\ currentTileMode,\\ \"target=\",\\ targetTileMode,\\ \"ok=\",\\ tileOk,\\ \"triesLeft=\",\\ triesLeft\\);|\\ \\ \\ \\ vlog\\(\"ensure:\\ current=\",\\ g\\.x,\\ g\\.y,\\ g\\.width,\\ g\\.height,\\ \"target=\",\\ target\\.x,\\ target\\.y,\\ target\\.width,\\ target\\.height,\\ \"ok=\",\\ ok,\\ \"triesLeft=\",\\ triesLeft\\);|\\ \\ return\\ \\(title\\ \\|\\|\\ \"\"\\)\\.replace\\(/\\[\\^a\\-zA\\-Z0\\-9_\\-\\]/g,\\ \"\\-\"\\)\\.replace\\(/\\-\\+/g,\\ \"\\-\"\\)\\.replace\\(/\\^\\-\\|\\-\\$/g,\\ \"\"\\)\\.slice\\(0,\\ 40\\)\\.toLowerCase\\(\\)\\ \\|\\|\\ \"unknown\";)$"
+
+      # These raw KWin scripts and JavaScript fixtures preserve their exact embedded bytes.
+      - path: "^main_integration_test\\.go$"
+        linters: [lll]
+        text: "^The line is [0-9]+ characters long"
+        source: "^(?:function\\ callDBus\\(service,path,iface,method,token,success,id,caption,geometry,message\\)\\{if\\(method===\"Placed\"\\)failures\\.push\\(\\{success:success,message:message\\}\\);\\}|var\\ intended=\\{internalId:\"2\",desktopFileName:\"org\\.example\\.App\",resourceClass:\"App\",frameGeometry:\\{x:300,y:300,width:50,height:50\\}\\};|var\\ unrelated=\\{internalId:\"1\",desktopFileName:\"org\\.other\\.App\",resourceClass:\"App\",frameGeometry:\\{x:300,y:300,width:50,height:50\\}\\};|var\\ window=\\{internalId:\"1\",desktopFileName:\"org\\.example\\.App\",desktops:\\[desk\\],frameGeometry:\\{x:0,y:0,width:100,height:100\\}\\};|var\\ window=\\{internalId:\"1\",desktopFileName:\"org\\.example\\.App\",desktops:\\[first\\],frameGeometry:\\{x:0,y:0,width:100,height:100\\}\\};|var\\ workspace=\\{screens:\\[internal,external\\],activeScreen:internal,desktops:\\[\\],stackingOrder:\\[\\],windowAdded:\\{connect:function\\(fn\\)\\{added=fn;\\}\\}\\};|var\\ workspace=\\{screens:\\[screen\\],activeScreen:screen,desktops:\\[\\],stackingOrder:\\[\\],windowAdded:\\{connect:function\\(fn\\)\\{added=fn;\\}\\}\\};|var\\ workspace=\\{screens:\\[screen\\],activeScreen:screen,desktops:\\[desk\\],stackingOrder:\\[\\],windowAdded:\\{connect:function\\(fn\\)\\{added=fn;\\}\\}\\};|var\\ workspace=\\{screens:\\[screen\\],activeScreen:screen,desktops:\\[first,second\\],stackingOrder:\\[\\],windowAdded:\\{connect:function\\(fn\\)\\{added=fn;\\}\\}\\};)$"
+      - path: "(?:(^|/)(node_modules|third_party|forks|vendor|testdata|fixtures|__fixtures__|snapshots|__snapshots__|__image_snapshots__|golden|corpus|fuzz_corpus|baselines|generated|\\.tmp|\\.gameops|\\.stryker-tmp|\\.cache)(/|$))"
+        linters: [whitespace]
 
 issues:
   max-issues-per-linter: 0
