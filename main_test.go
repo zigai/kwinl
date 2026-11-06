@@ -133,8 +133,16 @@ func TestParseTemplateAcceptsGeometryValuesInJSON(t *testing.T) {
 		geometry string
 		want     PresetGeometry
 	}{
-		{name: "numeric", geometry: `{"x":0,"y":0,"width":960,"height":1080}`, want: PresetGeometry{X: "0", Y: "0", Width: "960", Height: "1080"}},
-		{name: "string", geometry: `{"x":"0","y":"0","width":"50%","height":"1080"}`, want: PresetGeometry{X: "0", Y: "0", Width: "50%", Height: "1080"}},
+		{
+			name:     "numeric",
+			geometry: `{"x":0,"y":0,"width":960,"height":1080}`,
+			want:     PresetGeometry{X: "0", Y: "0", Width: "960", Height: "1080"},
+		},
+		{
+			name:     "string",
+			geometry: `{"x":"0","y":"0","width":"50%","height":"1080"}`,
+			want:     PresetGeometry{X: "0", Y: "0", Width: "50%", Height: "1080"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -143,7 +151,8 @@ func TestParseTemplateAcceptsGeometryValuesInJSON(t *testing.T) {
 
 			path := filepath.Join(t.TempDir(), "layout.json")
 
-			data := `{"version":"1.0.0","presets":[{"name":"demo","app":"org.kde.konsole","command":["echo","hi"],"geometry":` + tt.geometry + `}]}`
+			data := `{"version":"1.0.0","presets":[{"name":"demo","app":"org.kde.konsole",` +
+				`"command":["echo","hi"],"geometry":` + tt.geometry + `}]}`
 			if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 				t.Fatalf("write layout: %v", err)
 			}
@@ -402,7 +411,11 @@ func captureStderr(t *testing.T, fn func()) string {
 }
 
 func TestFormatValidationFailureWritesToStderrAndSuppressesRootLogging(t *testing.T) {
-	expected := &ValidationError{Field: "match", Value: "(", Message: "invalid regex: missing closing )"}
+	expected := &ValidationError{
+		Field:   "match",
+		Value:   "(",
+		Message: "invalid regex: missing closing )",
+	}
 
 	var err error
 
@@ -579,7 +592,8 @@ func TestParseWindowSearchConfigAcceptsRichSelectors(t *testing.T) {
 	}
 	defer os.RemoveAll(cfg.TempDir)
 
-	if cfg.Selector.Class != "Navigator" || cfg.Selector.Desktop != "current" || cfg.Selector.Monitor != "DP-1" {
+	if cfg.Selector.Class != "Navigator" || cfg.Selector.Desktop != "current" ||
+		cfg.Selector.Monitor != "DP-1" {
 		t.Fatalf("unexpected selector: %+v", cfg.Selector)
 	}
 
@@ -820,7 +834,11 @@ func TestBuildLaunchPresetRunUsesScriptNameAsCallbackToken(t *testing.T) {
 	}
 
 	if run.JSConfig.CallbackToken != run.ScriptName {
-		t.Fatalf("unexpected callback token: got %q want %q", run.JSConfig.CallbackToken, run.ScriptName)
+		t.Fatalf(
+			"unexpected callback token: got %q want %q",
+			run.JSConfig.CallbackToken,
+			run.ScriptName,
+		)
 	}
 }
 
@@ -1052,10 +1070,15 @@ func TestGenerateJSAbortsOnInvalidTargetInsteadOfFallingBack(t *testing.T) {
 	t.Parallel()
 
 	js := generateJS(jsPlacementConfig{
-		ScriptName:      "script",
-		App:             "org.kde.konsole",
-		Anchor:          "top-left",
-		Geom:            ParsedGeometry{X: GeomValue{Value: 0}, Y: GeomValue{Value: 0}, W: GeomValue{Value: 800}, H: GeomValue{Value: 600}},
+		ScriptName: "script",
+		App:        "org.kde.konsole",
+		Anchor:     "top-left",
+		Geom: ParsedGeometry{
+			X: GeomValue{Value: 0},
+			Y: GeomValue{Value: 0},
+			W: GeomValue{Value: 800},
+			H: GeomValue{Value: 600},
+		},
 		Verbose:         false,
 		CallbackService: "io.github.kwinl.Place.test",
 		CallbackToken:   "script",
@@ -1065,7 +1088,8 @@ func TestGenerateJSAbortsOnInvalidTargetInsteadOfFallingBack(t *testing.T) {
 		t.Fatalf("expected generated JS to abort on invalid target, got:\n%s", js)
 	}
 
-	if !strings.Contains(js, `invalid monitor target: `) || !strings.Contains(js, `invalid desktop target: `) {
+	if !strings.Contains(js, `invalid monitor target: `) ||
+		!strings.Contains(js, `invalid desktop target: `) {
 		t.Fatalf("expected generated JS to include explicit invalid target errors, got:\n%s", js)
 	}
 
@@ -1104,11 +1128,13 @@ func TestGenerateWindowSearchJSSendsWindowPayload(t *testing.T) {
 		t.Fatalf("expected generated JS to send a window payload, got:\n%s", js)
 	}
 
-	if !strings.Contains(js, `appIds: ids`) || !strings.Contains(js, `caption: "" + (w.caption || "")`) {
+	if !strings.Contains(js, `appIds: ids`) ||
+		!strings.Contains(js, `caption: "" + (w.caption || "")`) {
 		t.Fatalf("expected generated JS to include searchable window metadata, got:\n%s", js)
 	}
 
-	if !strings.Contains(js, `return selectorChecksMatch(checks);`) || !strings.Contains(js, `if (TARGET_ANY)`) {
+	if !strings.Contains(js, `return selectorChecksMatch(checks);`) ||
+		!strings.Contains(js, `if (TARGET_ANY)`) {
 		t.Fatalf("expected generated JS to require all provided selectors, got:\n%s", js)
 	}
 }
@@ -1204,7 +1230,8 @@ func TestGenerateDesktopAndMouseJSScriptsUseKWinAPIs(t *testing.T) {
 	t.Parallel()
 
 	desktopJS := generateDesktopQueryJS("script", "io.github.kwinl.Capture.test", "current", false)
-	if !strings.Contains(desktopJS, `workspace.currentDesktop`) || !strings.Contains(desktopJS, `workspace.desktops`) {
+	if !strings.Contains(desktopJS, `workspace.currentDesktop`) ||
+		!strings.Contains(desktopJS, `workspace.desktops`) {
 		t.Fatalf("expected desktop query JS to inspect KWin desktops, got:\n%s", desktopJS)
 	}
 
@@ -1370,7 +1397,8 @@ func TestResolveMouseScrollBackendFallsBackToXdotoolOnX11(t *testing.T) {
 }
 
 func TestHumanTablesHaveHeadersAndEmptyStates(t *testing.T) {
-	payload := `{"windows":[{"id":"1","app":"org.example.App","caption":"A title","geometry":"10,20,300,200","monitor":"DP-1","desktop":"Work"}]}`
+	payload := `{"windows":[{"id":"1","app":"org.example.App","caption":"A title",` +
+		`"geometry":"10,20,300,200","monitor":"DP-1","desktop":"Work"}]}`
 
 	output := captureStdout(t, func() {
 		if err := printWindowSearchPayload(payload, false, false); err != nil {
@@ -1398,33 +1426,45 @@ func TestRenderTableCompactTruncation(t *testing.T) {
 
 	columns := []tableColumn{
 		{heading: "ID", fixed: true, wrap: wrapIdentifier},
-		{heading: "App", fixed: false, minWidth: 16, wrap: wrapIdentifier},
-		{heading: "Title", fixed: false, minWidth: 20, wrap: wrapText},
+		{heading: "App", minWidth: 16, wrap: wrapIdentifier},
+		{heading: "Title", minWidth: 20, wrap: wrapText},
 		{heading: "Geometry", fixed: true, wrap: wrapIdentifier},
-		{heading: "Monitor", fixed: false, minWidth: 10, wrap: wrapIdentifier},
+		{heading: "Monitor", minWidth: 10, wrap: wrapIdentifier},
 		{heading: "Desktop", fixed: true, wrap: wrapIdentifier},
 		{heading: "States", fixed: true, wrap: wrapIdentifier},
 	}
 
 	rows := [][]string{
-		{"101", "org.kde.extremely.long.application.name.for.testing", "Very Long Window Title That Definitely Exceeds Width", "1920,1080,800,600", "DP-1-super-long-monitor-name", "Desktop 1", "minimized,keep-above"},
+		{
+			"101",
+			"org.kde.extremely.long.application.name.for.testing",
+			"Very Long Window Title That Definitely Exceeds Width",
+			"1920,1080,800,600",
+			"DP-1-super-long-monitor-name",
+			"Desktop 1",
+			"minimized,keep-above",
+		},
 	}
 
 	// Render in 80 width terminal (compact)
 	compactOut := renderTable(tableRenderOptions{
 		columns: columns,
 		rows:    rows,
-		full:    false,
 		width:   80,
 	})
 
 	lines := strings.Split(strings.TrimSpace(compactOut), "\n")
 	if len(lines) != 2 {
-		t.Fatalf("compact table must be single row (header + 1 row), got %d lines:\n%s", len(lines), compactOut)
+		t.Fatalf(
+			"compact table must be single row (header + 1 row), got %d lines:\n%s",
+			len(lines),
+			compactOut,
+		)
 	}
 
 	// Fixed columns must not be truncated
-	if !strings.Contains(lines[1], "101") || !strings.Contains(lines[1], "1920,1080,800,600") || !strings.Contains(lines[1], "Desktop 1") {
+	if !strings.Contains(lines[1], "101") || !strings.Contains(lines[1], "1920,1080,800,600") ||
+		!strings.Contains(lines[1], "Desktop 1") {
 		t.Fatalf("fixed column truncated in compact mode: %s", lines[1])
 	}
 
@@ -1439,16 +1479,24 @@ func TestRenderTableFullWrapped(t *testing.T) {
 
 	columns := []tableColumn{
 		{heading: "ID", fixed: true, wrap: wrapIdentifier},
-		{heading: "App", fixed: false, minWidth: 16, wrap: wrapIdentifier},
-		{heading: "Title", fixed: false, minWidth: 20, wrap: wrapText},
+		{heading: "App", minWidth: 16, wrap: wrapIdentifier},
+		{heading: "Title", minWidth: 20, wrap: wrapText},
 		{heading: "Geometry", fixed: true, wrap: wrapIdentifier},
-		{heading: "Monitor", fixed: false, minWidth: 10, wrap: wrapIdentifier},
+		{heading: "Monitor", minWidth: 10, wrap: wrapIdentifier},
 		{heading: "Desktop", fixed: true, wrap: wrapIdentifier},
 		{heading: "States", fixed: true, wrap: wrapIdentifier},
 	}
 
 	rows := [][]string{
-		{"101", "org.kde.app", "A Somewhat Long Window Title", "1920,1080,800,600", "DP-1", "Desktop 1", "minimized"},
+		{
+			"101",
+			"org.kde.app",
+			"A Somewhat Long Window Title",
+			"1920,1080,800,600",
+			"DP-1",
+			"Desktop 1",
+			"minimized",
+		},
 	}
 
 	// In 160 width, full wrapped table fits
@@ -1463,7 +1511,8 @@ func TestRenderTableFullWrapped(t *testing.T) {
 		t.Fatalf("full table must not truncate with ellipsis: %s", fullOut)
 	}
 
-	if !strings.Contains(fullOut, "A Somewhat Long Window Title") || !strings.Contains(fullOut, "org.kde.app") {
+	if !strings.Contains(fullOut, "A Somewhat Long Window Title") ||
+		!strings.Contains(fullOut, "org.kde.app") {
 		t.Fatalf("full table output missing expected contents:\n%s", fullOut)
 	}
 }
@@ -1473,16 +1522,24 @@ func TestRenderTableFullStackedFallback(t *testing.T) {
 
 	columns := []tableColumn{
 		{heading: "ID", fixed: true, wrap: wrapIdentifier},
-		{heading: "App", fixed: false, minWidth: 16, wrap: wrapIdentifier},
-		{heading: "Title", fixed: false, minWidth: 20, wrap: wrapText},
+		{heading: "App", minWidth: 16, wrap: wrapIdentifier},
+		{heading: "Title", minWidth: 20, wrap: wrapText},
 		{heading: "Geometry", fixed: true, wrap: wrapIdentifier},
-		{heading: "Monitor", fixed: false, minWidth: 10, wrap: wrapIdentifier},
+		{heading: "Monitor", minWidth: 10, wrap: wrapIdentifier},
 		{heading: "Desktop", fixed: true, wrap: wrapIdentifier},
 		{heading: "States", fixed: true, wrap: wrapIdentifier},
 	}
 
 	rows := [][]string{
-		{"101", "org.kde.extremely.long.application.name", "A Very Long Window Title That Cannot Fit In Narrow Table", "1920,1080,800,600", "DP-1", "Desktop 1", "minimized,keep-above"},
+		{
+			"101",
+			"org.kde.extremely.long.application.name",
+			"A Very Long Window Title That Cannot Fit In Narrow Table",
+			"1920,1080,800,600",
+			"DP-1",
+			"Desktop 1",
+			"minimized,keep-above",
+		},
 	}
 
 	// In 60 width terminal, full mode must fall back to stacked records
@@ -1510,14 +1567,16 @@ func TestRenderTableFullStackedFallback(t *testing.T) {
 
 func TestRenderTableDesktopsAndLayouts(t *testing.T) {
 	// Desktop list payload
-	desktopPayload := `{"desktops":[{"index":1,"id":"desk-1","name":"Main Workspace","current":true},{"index":2,"id":"desk-2","name":"Secondary Space","current":false}]}`
+	desktopPayload := `{"desktops":[{"index":1,"id":"desk-1","name":"Main Workspace","current":true},` +
+		`{"index":2,"id":"desk-2","name":"Secondary Space","current":false}]}`
 
 	out := captureStdout(t, func() {
 		if err := printDesktopListPayload(desktopPayload, false, false); err != nil {
 			t.Fatalf("print desktop list: %v", err)
 		}
 	})
-	if !strings.Contains(out, "Index") || !strings.Contains(out, "Main Workspace") || !strings.Contains(out, "current") {
+	if !strings.Contains(out, "Index") || !strings.Contains(out, "Main Workspace") ||
+		!strings.Contains(out, "current") {
 		t.Fatalf("unexpected desktop list output:\n%s", out)
 	}
 
@@ -1541,7 +1600,8 @@ func TestRenderTableDesktopsAndLayouts(t *testing.T) {
 			t.Fatalf("print mouse location: %v", err)
 		}
 	})
-	if !strings.Contains(out, "Monitor") || !strings.Contains(out, "500") || !strings.Contains(out, "DP-1") {
+	if !strings.Contains(out, "Monitor") || !strings.Contains(out, "500") ||
+		!strings.Contains(out, "DP-1") {
 		t.Fatalf("unexpected mouse location output:\n%s", out)
 	}
 }
@@ -1604,7 +1664,9 @@ func TestCompletionRejectsUnsupportedShell(t *testing.T) {
 func TestCapturePayloadErrorUsesNoMatchExitForEmptyCapture(t *testing.T) {
 	t.Parallel()
 
-	err := capturePayloadError(&ValidationError{Field: "capture", Message: "no capturable windows found"})
+	err := capturePayloadError(
+		&ValidationError{Field: "capture", Message: "no capturable windows found"},
+	)
 
 	var exitErr *ExitError
 	if !errors.As(err, &exitErr) || exitErr.Code != exitCodeNoMatch {
@@ -1653,7 +1715,10 @@ func TestExpandEnvVarsPreservesDollarTextInReplacement(t *testing.T) {
 func TestCaptureYAMLPreservesMultilineDesktopName(t *testing.T) {
 	t.Parallel()
 
-	template, err := buildTemplateFromCapturePayload(`{"presets":[{"app":"org.example.App","desktop":"work\n\"y\": a\n","geometry":{"x":"0","y":"0","width":"100","height":"100"},"command":["true"]}]}`)
+	template, err := buildTemplateFromCapturePayload(
+		`{"presets":[{"app":"org.example.App","desktop":"work\n\"y\": a\n",` +
+			`"geometry":{"x":"0","y":"0","width":"100","height":"100"},"command":["true"]}]}`,
+	)
 	if err != nil {
 		t.Fatalf("build captured layout: %v", err)
 	}

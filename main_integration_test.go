@@ -62,14 +62,21 @@ func TestCaptureFullscreenPresetsAreLaunchable(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			setup := fmt.Sprintf(`var screen={name:"DP-1",geometry:{x:0,y:0,width:1000,height:1000}};
+			setup := fmt.Sprintf(
+				`var screen={name:"DP-1",geometry:{x:0,y:0,width:1000,height:1000}};
 var workspace={screens:[screen],activeScreen:screen,stackingOrder:[{
  desktopFileName:"org.example.App",frameGeometry:{x:0,y:0,width:100,height:100},
  fullScreen:true,maximizedHorizontally:%v,maximizedVertically:%v
 }]};
 function callDBus(service,path,iface,method,payload){if(method==="Send")console.log(payload);}
-`, tt.horizontal, tt.vertical)
-			payload := runJavaScript(t, setup+generateCaptureJS("script", "service", captureOptions{InferCommand: true}))
+`,
+				tt.horizontal,
+				tt.vertical,
+			)
+			payload := runJavaScript(
+				t,
+				setup+generateCaptureJS("script", "service", captureOptions{InferCommand: true}),
+			)
 
 			template, err := buildTemplateFromCapturePayload(payload)
 			if err != nil {
@@ -88,7 +95,7 @@ function callDBus(service,path,iface,method,payload){if(method==="Send")console.
 	}
 }
 
-func placementScriptForTargets(t *testing.T, monitor, desktop string) string {
+func placementScriptForTargets(t *testing.T, monitor string, desktop string) string {
 	t.Helper()
 
 	restore := savePlaceFlags()
@@ -140,7 +147,10 @@ function callDBus(){};function print(){}
 var window={internalId:"1",desktopFileName:"org.example.App",frameGeometry:{x:0,y:0,width:100,height:100}};
 `
 
-	got := runJavaScript(t, setup+script+`added(window);console.log(JSON.stringify({monitor:window.output,x:window.frameGeometry.x}));`)
+	got := runJavaScript(
+		t,
+		setup+script+`added(window);console.log(JSON.stringify({monitor:window.output,x:window.frameGeometry.x}));`,
+	)
 	if got != `{"monitor":"DP-1","x":1000}` {
 		t.Fatalf("placed on wrong monitor: %s", got)
 	}
@@ -188,7 +198,13 @@ func TestWindowActionPrefersExactMonitorNameOverSuffix(t *testing.T) {
 		}
 	})
 
-	script := generateWindowActionJS(jsWindowActionConfig{ScriptName: cfg.ScriptName, Selector: cfg.Selector, Action: windowActionClose})
+	script := generateWindowActionJS(
+		jsWindowActionConfig{
+			ScriptName: cfg.ScriptName,
+			Selector:   cfg.Selector,
+			Action:     windowActionClose,
+		},
+	)
 
 	setup := `var closed=[];
 var internal={name:"eDP-1",geometry:{x:0,y:0,width:1000,height:1000}};
@@ -199,7 +215,10 @@ var workspace={screens:[internal,external],stackingOrder:[
 ]};
 function callDBus(){};function print(){}
 `
-	if got := runJavaScript(t, setup+script+`console.log(JSON.stringify(closed));`); got != `["DP-1"]` {
+	if got := runJavaScript(
+		t,
+		setup+script+`console.log(JSON.stringify(closed));`,
+	); got != `["DP-1"]` {
 		t.Fatalf("closed windows on wrong monitor: %s", got)
 	}
 }
@@ -230,7 +249,13 @@ func TestWindowActionPreservesUnrelatedAppNamespaces(t *testing.T) {
 		}
 	})
 
-	script := generateWindowActionJS(jsWindowActionConfig{ScriptName: cfg.ScriptName, Selector: cfg.Selector, Action: windowActionClose})
+	script := generateWindowActionJS(
+		jsWindowActionConfig{
+			ScriptName: cfg.ScriptName,
+			Selector:   cfg.Selector,
+			Action:     windowActionClose,
+		},
+	)
 
 	setup := `var closed=[];
 var workspace={stackingOrder:[
@@ -239,7 +264,10 @@ var workspace={stackingOrder:[
 ]};
 function callDBus(){};function print(){}
 `
-	if got := runJavaScript(t, setup+script+`console.log(JSON.stringify(closed));`); got != `["org.alpha.Editor"]` {
+	if got := runJavaScript(
+		t,
+		setup+script+`console.log(JSON.stringify(closed));`,
+	); got != `["org.alpha.Editor"]` {
 		t.Fatalf("closed unrelated application: %s", got)
 	}
 }
@@ -255,7 +283,11 @@ var unrelated={internalId:"1",desktopFileName:"org.other.App",resourceClass:"App
 var intended={internalId:"2",desktopFileName:"org.example.App",resourceClass:"App",frameGeometry:{x:300,y:300,width:50,height:50}};
 `
 
-	got := runJavaScript(t, setup+script+`added(unrelated);added(intended);console.log(JSON.stringify([unrelated.frameGeometry,intended.frameGeometry]));`)
+	got := runJavaScript(
+		t,
+		setup+script+`added(unrelated);added(intended);`+
+			`console.log(JSON.stringify([unrelated.frameGeometry,intended.frameGeometry]));`,
+	)
 	if got != `[{"x":300,"y":300,"width":50,"height":50},{"x":0,"y":0,"width":100,"height":100}]` {
 		t.Fatalf("placed unrelated application: %s", got)
 	}
@@ -264,7 +296,10 @@ var intended={internalId:"2",desktopFileName:"org.example.App",resourceClass:"Ap
 func capturedPlacementScript(t *testing.T, setup string) string {
 	t.Helper()
 
-	payload := runJavaScript(t, setup+generateCaptureJS("script", "service", captureOptions{InferCommand: true}))
+	payload := runJavaScript(
+		t,
+		setup+generateCaptureJS("script", "service", captureOptions{InferCommand: true}),
+	)
 
 	template, err := buildTemplateFromCapturePayload(payload)
 	if err != nil {
@@ -312,7 +347,10 @@ var workspace={screens:[screen],activeScreen:screen,desktops:[desk],stackingOrde
 function callDBus(){};function print(){}
 var window={internalId:"1",desktopFileName:"org.example.App",desktops:[desk],frameGeometry:{x:0,y:0,width:100,height:100}};
 `
-	if got := runJavaScript(t, setup+script+`added(window);console.log(JSON.stringify(window.desktops));`); got != `[]` {
+	if got := runJavaScript(
+		t,
+		setup+script+`added(window);console.log(JSON.stringify(window.desktops));`,
+	); got != `[]` {
 		t.Fatalf("restored pinned window on one desktop: %s", got)
 	}
 }
@@ -336,7 +374,10 @@ var workspace={screens:[screen],activeScreen:screen,desktops:[first,second],stac
 function callDBus(){};function print(){}
 var window={internalId:"1",desktopFileName:"org.example.App",desktops:[first],frameGeometry:{x:0,y:0,width:100,height:100}};
 `
-	if got := runJavaScript(t, setup+script+`added(window);console.log(JSON.stringify(window.desktops));`); got != `[{"name":"1"}]` {
+	if got := runJavaScript(
+		t,
+		setup+script+`added(window);console.log(JSON.stringify(window.desktops));`,
+	); got != `[{"name":"1"}]` {
 		t.Fatalf("restored window on wrong desktop: %s", got)
 	}
 }
@@ -354,8 +395,13 @@ function print(){}
 var window={internalId:"1",desktopFileName:"org.example.App",frameGeometry:{x:300,y:300,width:50,height:50}};
 `
 
-	got := runJavaScript(t, setup+script+`if(added)added(window);console.log(JSON.stringify({geometry:window.frameGeometry,failures:failures}));`)
-	if got != `{"geometry":{"x":300,"y":300,"width":50,"height":50},"failures":[{"success":false,"message":"invalid monitor target: 2"}]}` {
+	got := runJavaScript(
+		t,
+		setup+script+`if(added)added(window);`+
+			`console.log(JSON.stringify({geometry:window.frameGeometry,failures:failures}));`,
+	)
+	if got != `{"geometry":{"x":300,"y":300,"width":50,"height":50},`+
+		`"failures":[{"success":false,"message":"invalid monitor target: 2"}]}` {
 		t.Fatalf("invalid monitor index placed a window: %s", got)
 	}
 }

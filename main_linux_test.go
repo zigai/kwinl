@@ -24,7 +24,12 @@ func TestLaunchCommandReapsFastExitingChild(t *testing.T) {
 	}
 
 	if cmd.Stdin != nil || cmd.Stdout != nil || cmd.Stderr != nil {
-		t.Fatalf("expected detached child streams, got stdin=%T stdout=%T stderr=%T", cmd.Stdin, cmd.Stdout, cmd.Stderr)
+		t.Fatalf(
+			"expected detached child streams, got stdin=%T stdout=%T stderr=%T",
+			cmd.Stdin,
+			cmd.Stdout,
+			cmd.Stderr,
+		)
 	}
 
 	waitForLinuxProcessReaped(t, cmd.Process.Pid, 500*time.Millisecond)
@@ -63,7 +68,8 @@ func TestLaunchTimeoutUnloadsStartedScript(t *testing.T) {
 
 	layout := filepath.Join(t.TempDir(), "layout.json")
 
-	data := `{"timeout":"10ms","presets":[{"app":"org.example.App","command":["true"],"geometry":{"x":0,"y":0,"width":100,"height":100}}]}`
+	data := `{"timeout":"10ms","presets":[{"app":"org.example.App","command":["true"],` +
+		`"geometry":{"x":0,"y":0,"width":100,"height":100}}]}`
 	if err := os.WriteFile(layout, []byte(data), 0o600); err != nil {
 		t.Fatalf("write layout: %v", err)
 	}
@@ -82,7 +88,11 @@ func TestLaunchTimeoutUnloadsStartedScript(t *testing.T) {
 	defer server.mu.Unlock()
 
 	if server.loads != 1 || len(server.loaded) != 0 {
-		t.Fatalf("loaded %d scripts; %d remain after failed launch", server.loads, len(server.loaded))
+		t.Fatalf(
+			"loaded %d scripts; %d remain after failed launch",
+			server.loads,
+			len(server.loaded),
+		)
 	}
 
 	scripts, err := readScriptMarkers()
@@ -106,7 +116,14 @@ func startPrivateBus(t *testing.T) string {
 
 	dir := t.TempDir()
 	socketName := filepath.Base(filepath.Dir(dir))
-	cmd := exec.CommandContext(t.Context(), "dbus-daemon", "--session", "--nofork", "--print-address=1", "--address=unix:abstract=kwinl-test-"+socketName)
+	cmd := exec.CommandContext(
+		t.Context(),
+		"dbus-daemon",
+		"--session",
+		"--nofork",
+		"--print-address=1",
+		"--address=unix:abstract=kwinl-test-"+socketName,
+	)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -183,7 +200,7 @@ func newLaunchBus(t *testing.T) *launchBus {
 	return server
 }
 
-func (s *launchBus) loadScript(path, name string) (int32, *dbus.Error) {
+func (s *launchBus) loadScript(path string, name string) (int32, *dbus.Error) {
 	if _, err := os.ReadFile(path); err != nil {
 		return 0, dbus.MakeFailedError(err)
 	}
@@ -220,7 +237,13 @@ func TestWriteCaptureOutputPreservesFileOnPartialWrite(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		err := writeCaptureOutput(path, []byte(`{"version":1,"presets":[{"app":"org.example.App","command":["true"],"geometry":{"x":0,"y":0,"width":1,"height":1}}]}`))
+		err := writeCaptureOutput(
+			path,
+			[]byte(
+				`{"version":1,"presets":[{"app":"org.example.App","command":["true"],`+
+					`"geometry":{"x":0,"y":0,"width":1,"height":1}}]}`,
+			),
+		)
 		if !errors.Is(err, syscall.EFBIG) {
 			t.Fatalf("expected file-size write failure, got %v", err)
 		}
@@ -231,12 +254,19 @@ func TestWriteCaptureOutputPreservesFileOnPartialWrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "layout.json")
 
-	original := []byte(`{"version":1,"presets":[{"app":"org.example.App","command":["true"],"geometry":{"x":0,"y":0,"width":100,"height":100}}]}`)
+	original := []byte(
+		`{"version":1,"presets":[{"app":"org.example.App","command":["true"],` +
+			`"geometry":{"x":0,"y":0,"width":100,"height":100}}]}`,
+	)
 	if err := os.WriteFile(path, original, 0o640); err != nil {
 		t.Fatal(err)
 	}
 
-	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestWriteCaptureOutputPreservesFileOnPartialWrite$")
+	cmd := exec.CommandContext(
+		t.Context(),
+		os.Args[0],
+		"-test.run=^TestWriteCaptureOutputPreservesFileOnPartialWrite$",
+	)
 
 	cmd.Env = append(os.Environ(), "TEST_CAPTURE_PATH="+path)
 	if out, err := cmd.CombinedOutput(); err != nil {
