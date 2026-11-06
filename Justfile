@@ -33,6 +33,7 @@ fix:
 format:
     @golangci-lint run --fix --enable-only whitespace --issues-exit-code=0
     @golangci-lint fmt
+    @git ls-files -co --exclude-standard -z | while IFS= read -r -d '' file; do if [[ -f $file ]]; then printf '%s\0' "$file"; fi; done | xargs -0 -r oxfmt --no-error-on-unmatched-pattern '!**/*.md'
     @git ls-files -co --exclude-standard -z | while IFS= read -r -d '' file; do if [[ -f $file ]]; then printf '%s\0' "$file"; fi; done | xargs -0 -r shfmt -f | xargs -r -d '\n' shfmt -w
     @git ls-files -co --exclude-standard -- Justfile justfile "*.just" | while IFS= read -r file; do just --justfile "$file" --fmt; done
     @just markdown fmt
@@ -56,9 +57,11 @@ clean: (remove "bin" "kwinl" "kwinl.exe" "dist" "coverage.out" "*.test" "*.prof"
 formatcheck:
     @golangci-lint run --enable-only whitespace
     @golangci-lint fmt --diff
+    @git ls-files -co --exclude-standard -z | while IFS= read -r -d '' file; do if [[ -f $file ]]; then printf '%s\0' "$file"; fi; done | xargs -0 -r oxfmt --check --no-error-on-unmatched-pattern '!**/*.md'
     @git ls-files -co --exclude-standard -z | while IFS= read -r -d '' file; do if [[ -f $file ]]; then printf '%s\0' "$file"; fi; done | xargs -0 -r shfmt -f | xargs -r -d '\n' shfmt -d
     @git ls-files -co --exclude-standard -- Justfile justfile "*.just" | while IFS= read -r file; do just --justfile "$file" --fmt --check; done
     @just markdown check
+    @git ls-files -co --exclude-standard -z | while IFS= read -r -d '' file; do if [[ -f $file ]]; then printf '%s\0' "$file"; fi; done | xargs -0 -r editorconfig-checker -disable-indent-size -disable-indentation -disable-max-line-length -disable-charset
 
 # Run the commit checks and slow suites
 checkfull: (run-checks "formatcheck" "lockcheck" "lint" "build-check" "test" "race")
@@ -75,6 +78,7 @@ lockcheck:
 
 # Install repository dependencies
 setup:
+    @git config core.hooksPath .githooks
     @go mod download
 
 # List available recipes
