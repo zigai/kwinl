@@ -148,7 +148,7 @@ var validWindowActions = []string{
 var (
 	version = "dev"
 	commit  = "none"
-	date    = "unknown"
+	dirty   = ""
 
 	verboseFlag bool
 
@@ -215,7 +215,7 @@ var rootCmd = &cobra.Command{
 	SilenceErrors: true,
 	Long: `kwinl loads temporary KWin scripts via D-Bus that intercept newly created
 windows and move/resize them to the requested geometry.`,
-	Version: fmt.Sprintf("kwinl %s (commit: %s, built: %s)", version, commit, date),
+	Version: versionText(),
 }
 
 var placeCmd = &cobra.Command{

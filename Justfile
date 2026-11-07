@@ -44,11 +44,15 @@ lint:
 
 # Build the binary with version info
 build:
-    go build -ldflags "-X main.version=dev -X main.commit=$(git rev-parse --short HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o bin/kwinl .
+    #!/usr/bin/env sh
+    set -e
+    version=$(git describe --tags --dirty)
+    commit=$(git rev-parse --short HEAD)
+    go build -ldflags "-X main.version=${version} -X main.commit=${commit}" -o bin/kwinl .
 
 # Install the command to ~/.local/bin
-install: && (report-install home_directory() / ".local/bin/kwinl")
-    GOBIN="$HOME/.local/bin" go install -trimpath -ldflags='-s -w' .
+install: build && (report-install home_directory() / ".local/bin/kwinl")
+    install -Dm755 bin/kwinl "$HOME/.local/bin/kwinl"
 
 # Remove generated output and caches
 clean: (remove "bin" "kwinl" "kwinl.exe" "dist" "coverage.out" "*.test" "*.prof" "coverage")
